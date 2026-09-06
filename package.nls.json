@@ -1,5 +1,5 @@
 {
-  "extension.description": "Zero-dependency file and log watcher that posts macOS notifications — built for Claude Code hooks in network-isolated devcontainers (macOS only)",
+  "extension.description": "A zero-dependency VS Code extension that watches files for changes and delivers them to the macOS Notification Center.\nBuilt first of all for Claude Code hooks inside an egress-blocked devcontainer, but any file can be watched.\n(macOS only)",
 
   "capabilities.untrustedWorkspaces.description": "chirin never executes workspace code. Watch targets and settings come only from the host-side config, and the workspace (container) content is treated as read-only data.",
 

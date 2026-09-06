@@ -2,9 +2,10 @@
   "name": "chirin",
   "displayName": "chirin",
   "publisher": "kei-ikeda",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "%extension.description%",
   "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/Kei-Ikeda/chirin.git"

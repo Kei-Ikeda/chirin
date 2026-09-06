@@ -1,5 +1,5 @@
 {
-  "extension.description": "ファイルの変化を監視して macOS の通知センターへ届けるゼロ依存の VS Code 拡張。egress を遮断した devcontainer 内の Claude Code hooks 向け（macOS 専用）",
+  "extension.description": "ファイルの変化を監視して macOS の通知センターへ届けるゼロ依存の VS Code 拡張。\n主に egress を遮断した devcontainer 内の Claude Code hooks 向けだが、任意のファイルを監視することで拡張した利用も可能。\n（macOS 専用）",
 
   "capabilities.untrustedWorkspaces.description": "chirin はワークスペースのコードを実行しません。監視対象と設定はホスト側の config だけを参照し、ワークスペース(コンテナ)側の内容は読み取り専用データとして扱います。",
 
