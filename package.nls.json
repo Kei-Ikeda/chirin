@@ -1,0 +1,42 @@
+{
+  "extension.description": "Zero-dependency file and log watcher that posts macOS notifications — built for Claude Code hooks in network-isolated devcontainers (macOS only)",
+
+  "capabilities.untrustedWorkspaces.description": "chirin never executes workspace code. Watch targets and settings come only from the host-side config, and the workspace (container) content is treated as read-only data.",
+
+  "config.configPath.description": "Path to config.json. When empty, `~/.config/chirin/config.json` is used.",
+  "config.enabled.description": "Enable file watching.",
+  "config.showInEditorToast.description": "Also show a notification inside the VS Code window, in addition to the OS notification.",
+
+  "command.init.title": "chirin: Create config file",
+  "command.openConfig.title": "chirin: Open config file",
+  "command.validate.title": "chirin: Validate config",
+  "command.test.title": "chirin: Send test notification",
+  "command.reload.title": "chirin: Reload config",
+  "command.toggle.title": "chirin: Start / stop watching",
+  "command.showLog.title": "chirin: Show log",
+  "command.installHook.title": "chirin: Install the Claude Code hook into this project",
+  "command.openWalkthrough.title": "chirin: Open setup",
+
+  "walkthrough.title": "Set up chirin",
+  "walkthrough.description": "Four steps to get macOS notifications from Claude Code running inside a devcontainer.",
+
+  "walkthrough.createConfig.title": "Create the config file",
+  "walkthrough.createConfig.description": "Creates the config.json in `~/.config/chirin/` that lists the files to watch and what to notify. The editor opens afterwards, so adjust `watch` to your own working directory and save.\n[Create config file](command:chirin.init)",
+  "walkthrough.createConfig.media": "media/walkthrough/create-config.md",
+  "walkthrough.createConfig.altText": "Creating the config file",
+
+  "walkthrough.validateConfig.title": "Check the watch targets",
+  "walkthrough.validateConfig.description": "Validates the config and lists, in the output panel, the files that are actually watched after glob expansion. If this is empty, the paths in `watch` do not match.\n[Validate config](command:chirin.validate)",
+  "walkthrough.validateConfig.media": "media/walkthrough/validate-config.md",
+  "walkthrough.validateConfig.altText": "Checking the watch targets",
+
+  "walkthrough.allowNotification.title": "Allow notifications on macOS",
+  "walkthrough.allowNotification.description": "Sends a single test notification. **The first time, macOS shows its notification permission prompt here** — be sure to allow it. Without permission, every later notification is silently dropped.\n[Send test notification](command:chirin.test)",
+  "walkthrough.allowNotification.media": "media/walkthrough/allow-notification.md",
+  "walkthrough.allowNotification.altText": "Allowing notifications",
+
+  "walkthrough.installHook.title": "Install the hook into your project",
+  "walkthrough.installHook.description": "Installs into the workspace the hook that makes Claude Code write out its events. Run it with **the repository you want notifications for** open.\n[Install hook](command:chirin.installHook)",
+  "walkthrough.installHook.media": "media/walkthrough/install-hook.md",
+  "walkthrough.installHook.altText": "Installing the hook"
+}

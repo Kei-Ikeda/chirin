@@ -1,0 +1,17 @@
+# The .vsix carries only dist/src, hooks, media, the nls bundles, README and LICENSE.
+# Do not exclude package.nls*.json: that would silently drop the Japanese UI.
+src/**
+test/**
+dist/test/**
+.github/**
+.devcontainer/**
+.claude/**
+.vscode/**
+tmp/**
+.tmp/**
+node_modules/**
+tsconfig.json
+package-lock.json
+.gitignore
+.DS_Store
+**/*.map

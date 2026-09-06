@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    strategy:
+      # The extension host's Node is determined by the VS Code version. Cover both ends:
+      # the lower bound of engines.vscode (1.101 = Node 22) and the latest (1.136 = Node 24).
+      # fail-fast is off so a failure on one still shows the other's result.
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      # Mechanically guarantee zero dependencies (an empty `dependencies`)
+      - run: npm run check:zero-deps
+      - run: npm run build
+      - run: npm test
+      # Confirm the .vsix can be built (and that it carries no src/ or test/)
+      - run: npx vsce package --out chirin.vsix
+      - name: Confirm the .vsix carries no sources
+        run: |
+          # Tell an unzip failure apart from grep finding nothing. Piping them directly would
+          # let the check pass even when unzip fails (pipefail does not apply inside an if).
+          listing=$(unzip -l chirin.vsix)
+          if grep -E "extension/(src|test|dist/test|tmp|\.tmp)/" <<< "$listing"; then
+            echo "::error::the .vsix contains sources, tests or scratch files"
+            exit 1
+          fi

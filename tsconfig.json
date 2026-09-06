@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // The VS Code extension host loads main with require(), so emit CommonJS
+    // (ESM extension support is not yet mature). package.json has no "type": "module",
+    // so module: NodeNext still emits CommonJS. The `.js` extension on relative imports
+    // is mandatory.
+    //
+    // The former moduleResolution: Node10 is deprecated in TypeScript 6.0 and removed in
+    // 7.0, hence the move to NodeNext (module: NodeNext implies moduleResolution: NodeNext).
+    "module": "NodeNext",
+    // Enabled because `import fs from "node:fs"` does not resolve by default in a CommonJS
+    // emit (this keeps the existing import style unchanged).
+    "esModuleInterop": true,
+    // Stated explicitly because TypeScript 6.0 defaults types to [] (dropping the automatic
+    // @types pickup). vscode ships only as `declare module 'vscode'` in @types/vscode with no
+    // real package behind it, so removing it here makes the module unresolvable altogether.
+    "types": ["node", "vscode"],
+    "rootDir": ".",
+    "outDir": "dist",
+    // Makes breakpoints work under F5 (debugging the extension). Not shipped in the .vsix (.vscodeignore)
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    // Mechanically detects dead code creeping in (unused locals and parameters)
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "test"]
+}

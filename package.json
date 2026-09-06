@@ -1,0 +1,170 @@
+{
+  "name": "chirin",
+  "displayName": "chirin",
+  "publisher": "kei-ikeda",
+  "version": "1.0.0",
+  "description": "%extension.description%",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kei-Ikeda/chirin.git"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./dist/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "notification",
+    "watcher",
+    "devcontainer",
+    "claude-code",
+    "macos"
+  ],
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/vscode": "1.101.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^7.0.2"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "%capabilities.untrustedWorkspaces.description%"
+    }
+  },
+  "contributes": {
+    "configuration": {
+      "title": "chirin",
+      "properties": {
+        "chirin.configPath": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "%config.configPath.description%"
+        },
+        "chirin.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "%config.enabled.description%"
+        },
+        "chirin.showInEditorToast": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "%config.showInEditorToast.description%"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "chirin.init",
+        "title": "%command.init.title%"
+      },
+      {
+        "command": "chirin.openConfig",
+        "title": "%command.openConfig.title%"
+      },
+      {
+        "command": "chirin.validate",
+        "title": "%command.validate.title%"
+      },
+      {
+        "command": "chirin.test",
+        "title": "%command.test.title%"
+      },
+      {
+        "command": "chirin.reload",
+        "title": "%command.reload.title%"
+      },
+      {
+        "command": "chirin.toggle",
+        "title": "%command.toggle.title%"
+      },
+      {
+        "command": "chirin.showLog",
+        "title": "%command.showLog.title%"
+      },
+      {
+        "command": "chirin.installHook",
+        "title": "%command.installHook.title%"
+      },
+      {
+        "command": "chirin.openWalkthrough",
+        "title": "%command.openWalkthrough.title%"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "setup",
+        "title": "%walkthrough.title%",
+        "description": "%walkthrough.description%",
+        "steps": [
+          {
+            "id": "createConfig",
+            "title": "%walkthrough.createConfig.title%",
+            "description": "%walkthrough.createConfig.description%",
+            "media": {
+              "markdown": "%walkthrough.createConfig.media%",
+              "altText": "%walkthrough.createConfig.altText%"
+            },
+            "completionEvents": [
+              "onCommand:chirin.init"
+            ]
+          },
+          {
+            "id": "validateConfig",
+            "title": "%walkthrough.validateConfig.title%",
+            "description": "%walkthrough.validateConfig.description%",
+            "media": {
+              "markdown": "%walkthrough.validateConfig.media%",
+              "altText": "%walkthrough.validateConfig.altText%"
+            },
+            "completionEvents": [
+              "onCommand:chirin.validate"
+            ]
+          },
+          {
+            "id": "allowNotification",
+            "title": "%walkthrough.allowNotification.title%",
+            "description": "%walkthrough.allowNotification.description%",
+            "media": {
+              "markdown": "%walkthrough.allowNotification.media%",
+              "altText": "%walkthrough.allowNotification.altText%"
+            },
+            "completionEvents": [
+              "onCommand:chirin.test"
+            ]
+          },
+          {
+            "id": "installHook",
+            "title": "%walkthrough.installHook.title%",
+            "description": "%walkthrough.installHook.description%",
+            "media": {
+              "markdown": "%walkthrough.installHook.media%",
+              "altText": "%walkthrough.installHook.altText%"
+            },
+            "completionEvents": [
+              "onCommand:chirin.installHook"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "package": "npm run build && vsce package",
+    "check:zero-deps": "node -e \"const p=require('./package.json');if(Object.keys(p.dependencies??{}).length){console.error('dependencies must be empty');process.exit(1)}\""
+  }
+}
