@@ -334,7 +334,7 @@ confirmation, say) lets you tell them apart without looking at the screen.
 | `rules[].notify.title` | Template. Truncated to 60 characters after expansion. Defaults to `"chirin"` |
 | `rules[].notify.subtitle` | Template. The notification's second line. Truncated to 60 characters after expansion. Optional |
 | `rules[].notify.message` | Template. Required. Truncated to 120 characters after expansion |
-| `rules[].notify.sound` | `/^[A-Za-z ]{1,30}$/` (e.g. `Pop`). No sound when omitted |
+| `rules[].notify.sound` | `/^[A-Za-z ]{1,30}$/` (e.g. `Pop`). No sound when omitted. The name is looked up in the macOS sound directories, so a sound of your own works too: put `chirin.aiff` in `~/Library/Sounds/` and write `"chirin"` (the file name without its extension) |
 | `rules[].throttleMs` | Notification suppression window per rule x file. Defaults to `defaults.throttleMs` |
 
 ### Match types
