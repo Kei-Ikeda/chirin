@@ -4,6 +4,7 @@
 macOS Notification Center — first of all, Claude Code hooks that fire inside a devcontainer
 with no network egress.
 
+[![Marketplace](https://img.shields.io/visual-studio-marketplace/v/kei-ikeda.chirin?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=kei-ikeda.chirin)
 [![CI](https://github.com/Kei-Ikeda/chirin/actions/workflows/ci.yml/badge.svg)](https://github.com/Kei-Ikeda/chirin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
@@ -108,13 +109,22 @@ Everything is done from VS Code on the host. There is no work to do inside the c
 
 ### Once, up front (VS Code)
 
-1. Install the extension
+1. Install the extension, either way
 
-   ```bash
-   code --install-extension chirin-<version>.vsix
-   ```
+   - **From the Marketplace**: search for `chirin` in the Extensions view (`Shift+Cmd+X`) and pick the one published by **kei-ikeda**, or run
 
-   > If you received the `.vsix` from someone else, verify its SHA-256 against the value they publish before installing (`shasum -a 256 chirin-<version>.vsix`). You can also build an identical artifact yourself from the repository with `npm ci && npm run package`.
+     ```bash
+     code --install-extension kei-ikeda.chirin
+     ```
+
+   - **From a `.vsix`**: download `chirin-<version>.vsix` from the [Releases page](https://github.com/Kei-Ikeda/chirin/releases), check its SHA-256 against the value in the release notes, then install
+
+     ```bash
+     shasum -a 256 chirin-<version>.vsix
+     code --install-extension chirin-<version>.vsix
+     ```
+
+     You can also build the `.vsix` yourself from the repository with `npm ci && npm run package`.
 
 2. Follow the **"Set up chirin" walkthrough** that opens right after installation
 
