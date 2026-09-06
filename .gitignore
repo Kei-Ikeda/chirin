@@ -19,6 +19,6 @@ tmp/
 .vscode/settings.json
 
 # chirin
+.claude/hooks/chirin-notify.sh
 .claude/chirin-notify-state.json
 .claude/.chirin-notify-tmp-*
-.claude/hooks/chirin-notify.sh
