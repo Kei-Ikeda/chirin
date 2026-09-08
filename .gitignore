@@ -8,9 +8,10 @@ tmp/
 .tmp/
 
 # claude (do not track any of it: dogfooding state files, and local configs holding personal paths)
-# CLAUDE.md alone is tracked, as an asset of the repository
+# CLAUDE.md and the skills are tracked, as assets of the repository
 .claude/*
 !.claude/CLAUDE.md
+!.claude/skills/
 
 # Host/container-local secrets and personal settings (guarding against an accidental commit)
 .devcontainer/
