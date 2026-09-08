@@ -1,0 +1,139 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { ConfigTracker } from "../src/configWatch.js";
+
+// Change detection for the config file, driven against real files and real permissions:
+// the case that matters most (a rejection repaired with chmod alone) leaves the bytes
+// untouched, so nothing but the real mode bits can reproduce it.
+
+const VALID_CONFIG = JSON.stringify({
+  rules: [
+    {
+      id: "stop",
+      watch: ["/tmp/chirin-configwatch/.claude/chirin-notify-state.json"],
+      match: { type: "event", equals: "Stop" },
+      notify: { message: "done" },
+    },
+  ],
+});
+
+interface Fixture {
+  dir: string;
+  configPath: string;
+  tracker: ConfigTracker;
+}
+
+function setup(t: { after(fn: () => void): void }, content = VALID_CONFIG, mode = 0o600): Fixture {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-configwatch-"));
+  t.after(() => {
+    // A test may leave the directory group-writable or unreadable; restore before cleaning up
+    fs.chmodSync(dir, 0o700);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  fs.chmodSync(dir, 0o700);
+  const configPath = path.join(dir, "config.json");
+  fs.writeFileSync(configPath, content, { mode });
+  fs.chmodSync(configPath, mode);
+  return { dir, configPath, tracker: new ConfigTracker() };
+}
+
+test("a config rejected only for its mode recovers on chmod, with no edit", (t) => {
+  const f = setup(t, VALID_CONFIG, 0o666);
+
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "rejected");
+  // Polling again while nothing has changed must not report the config as healthy
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+
+  fs.chmodSync(f.configPath, 0o600);
+
+  const status = f.tracker.check(f.configPath);
+  assert.equal(status.kind, "accepted");
+  // The bytes never moved, so the reload is driven by the revalidation rather than by a diff
+  assert.equal(status.kind === "accepted" && status.changed, false);
+});
+
+test("repairing the config directory's mode recovers as well", (t) => {
+  const f = setup(t);
+  fs.chmodSync(f.dir, 0o777);
+
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "rejected");
+
+  fs.chmodSync(f.dir, 0o700);
+
+  assert.equal(f.tracker.check(f.configPath).kind, "accepted");
+});
+
+test("an unchanged, still-broken config reports its reason only once", (t) => {
+  const f = setup(t, "{ not json", 0o600);
+
+  const first = f.tracker.check(f.configPath);
+  assert.equal(first.kind, "rejected");
+  assert.equal(first.kind === "rejected" && first.firstReport, true);
+
+  for (let i = 0; i < 3; i++) {
+    const repeated = f.tracker.check(f.configPath);
+    assert.equal(repeated.kind, "rejected");
+    assert.equal(repeated.kind === "rejected" && repeated.firstReport, false);
+  }
+});
+
+test("a different rejection reason is reported again", (t) => {
+  const f = setup(t, "{ not json", 0o600);
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+
+  fs.writeFileSync(f.configPath, JSON.stringify({ rules: [] }), { mode: 0o600 });
+
+  const status = f.tracker.check(f.configPath);
+  assert.equal(status.kind, "rejected");
+  assert.equal(status.kind === "rejected" && status.firstReport, true);
+});
+
+test("a healthy, unchanged config is left alone (the watcher is not rebuilt)", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  for (let i = 0; i < 3; i++) {
+    assert.equal(f.tracker.check(f.configPath).kind, "unchanged");
+  }
+});
+
+test("an edit that validates reloads, and one that does not keeps the previous config", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  fs.writeFileSync(f.configPath, "{ broken", { mode: 0o600 });
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+
+  // A corrected save recovers
+  fs.writeFileSync(f.configPath, VALID_CONFIG, { mode: 0o600 });
+  const status = f.tracker.check(f.configPath);
+  assert.equal(status.kind, "accepted");
+  assert.equal(status.kind === "accepted" && status.changed, true);
+});
+
+test("a config that disappears keeps the current state and is picked up when it returns", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  fs.rmSync(f.configPath);
+  assert.equal(f.tracker.check(f.configPath).kind, "unreadable");
+
+  fs.writeFileSync(f.configPath, VALID_CONFIG, { mode: 0o600 });
+  assert.equal(f.tracker.check(f.configPath).kind, "accepted");
+});
+
+test("a missing config still reaches the loader, so 'not configured' stays distinguishable", (t) => {
+  const f = setup(t);
+  fs.rmSync(f.configPath);
+
+  const status = f.tracker.loadNow(f.configPath);
+  assert.equal(status.kind, "rejected");
+  assert.match(
+    status.kind === "rejected" ? String(status.error) : "",
+    /config not found/,
+    "loadNow must not swallow a missing config into 'unreadable'",
+  );
+});

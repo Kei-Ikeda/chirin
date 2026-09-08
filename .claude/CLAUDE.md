@@ -61,8 +61,10 @@ renders `[label](url)` as a link, so `](` is broken).
 |---|---|---|
 | VS Code boundary | `extension.ts` / `commands.ts` / `vscodeLog.ts` / `vscodeNotifier.ts` | The only files that import `vscode` |
 | Watch loop | `watcher.ts` | glob expansion → poll → rule match → throttle → sanitize → notify |
+| Regex isolation | `regexMatcher.ts` / `regexWorker.ts` | `regex` matching in a worker thread, terminated past its budget (nothing on the evaluating thread can interrupt a runaway match) |
 | Source adapters | `sources.ts` | Answers "what are the new events?" per source type (json-state / log-lines / file-meta) |
 | Read primitives | `fileread.ts` | Trust-boundary checks and bounded reads (O_NOFOLLOW / O_NONBLOCK / fstat for TOCTOU) |
+| Policies extracted for testing | `configWatch.ts` (when a config poll is worth acting on) / `hookSettings.ts` (which existing hooks survive the install) | Decisions that would otherwise sit in `extension.ts` / `commands.ts` behind `vscode` |
 | Single-purpose utilities | `config.ts` `configTemplate.ts` `glob.ts` `jsonc.ts` `leader.ts` `log.ts` `notifier.ts` `sanitize.ts` | — |
 
 **Do not import `vscode` into the core.** That boundary is what lets the tests run on
@@ -86,7 +88,9 @@ rather than an append log or a spool because the point of a notification is to c
 latest state.
 
 On startup and when a file joins the watch set, `ts` is only recorded and nothing is notified (so
-past events do not notify every time the extension host restarts). The one exception is a file
+past events do not notify every time the extension host restarts). That baseline is taken as
+watching starts (`primeTargets`), not by the first poll: leaving it to the poll misread
+anything written in the gap as pre-existing state. The one exception is a file
 first observed missing at a watched path: its appearance is a new event and notifies on the first
 valid read (`seenMissing` in `sources.ts`), so the first notification after installing a hook is
 not dropped.
@@ -96,10 +100,14 @@ not dropped.
 The extension host is one process per window, so without suppression a single event notifies
 once per window (the `Watcher`'s throttle is an in-process Map and cannot help). `leader.ts`
 has the windows contend for a lock file, and only the leader's window runs the `Watcher`.
+The lock is named `watcher-<digest of the config's resolved path>.lock` so that leadership is
+per configuration, not per directory.
 
-The lock operations in `leader.ts` (`rename` → validate → restore with `link`, the in-place
-write to an fd) are **all defenses against specific races**. Each one is explained in a
-comment at the point it happens; read those before touching them.
+The lock operations in `leader.ts` (publishing a fully written file with `link`, `rename` →
+validate → restore with `link`, the in-place write to an fd) are **all defenses against
+specific races**. Failures are classified too: a lost race leaves the window a follower, while
+a permission or I/O failure has to reach `onStalled` rather than look like healthy following.
+Each one is explained in a comment at the point it happens; read those before touching them.
 
 The `Watcher` is rebuilt on every promotion (reusing one would re-detect a change another window
 notified about while this one was demoted, producing a duplicate).

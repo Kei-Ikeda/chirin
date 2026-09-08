@@ -6,7 +6,6 @@
 // Running in that position is what makes chirin's threat model (the container is untrusted)
 // hold together.
 
-import path from "node:path";
 import * as vscode from "vscode";
 import {
   resolveConfigPath,
@@ -17,13 +16,8 @@ import {
   runValidate,
   warnIfConfigInsideWorkspace,
 } from "./commands.js";
-import {
-  ConfigError,
-  ConfigNotFoundError,
-  loadConfig,
-  readConfigText,
-  type Config,
-} from "./config.js";
+import { ConfigError, ConfigNotFoundError, type Config } from "./config.js";
+import { ConfigTracker } from "./configWatch.js";
 import { LeaderElection, defaultLockPath } from "./leader.js";
 import { errorMessage, log, resetLogSink, setLogSink } from "./log.js";
 import { outputChannelFilter, outputChannelSink } from "./vscodeLog.js";
@@ -203,8 +197,8 @@ class ChirinController implements vscode.Disposable {
   private election: LeaderElection | undefined;
   private state: State = "disabled";
   private detail = "";
-  /** Raw text of the last config read. The baseline for change detection (undefined if never read). */
-  private configText: string | undefined;
+  /** Owns change detection for the config file (including when a rejection has to be revisited). */
+  private readonly configTracker = new ConfigTracker();
   private configPollTimer: NodeJS.Timeout | undefined;
   /** Path we already warned about for living inside the workspace. Prevents repeating the warning for the same misconfiguration. */
   private warnedWorkspaceConfig: string | undefined;
@@ -232,11 +226,12 @@ class ChirinController implements vscode.Disposable {
       // Startup only loads. Listing the watch targets is the job of `chirin: Validate config`
       // (with many targets it would bury the log on every startup).
       configPath = resolveConfigPath();
-      // Take the change-detection baseline before loadConfig. If the file changes right
-      // after we read it, that shows up as a diff on the next tick, so at worst one extra
-      // reload runs and nothing is missed.
-      this.configText = readConfigText(configPath);
-      config = loadConfig(configPath);
+      // The tracker takes the change-detection baseline before loading. If the file changes
+      // right after it is read, that shows up as a diff on the next tick, so at worst one
+      // extra reload runs and nothing is missed.
+      const status = this.configTracker.loadNow(configPath);
+      if (status.kind === "rejected") throw status.error;
+      config = status.config;
     } catch (err) {
       // Keep change detection running even with a broken or missing config, so saving a fix
       // recovers automatically (if configPath could not be resolved there is nothing to watch).
@@ -266,10 +261,11 @@ class ChirinController implements vscode.Disposable {
       warnIfConfigInsideWorkspace(configPath);
     }
 
-    // The lock lives in the same directory as the config. Windows pointing at a different
-    // config use a different lock and run independently (different settings mean different
-    // notifications are wanted).
-    const lockPath = defaultLockPath(path.dirname(configPath));
+    // The lock lives in the same directory as the config and is named after it. Windows
+    // pointing at a different config use a different lock and run independently (different
+    // settings mean different notifications are wanted) - including two configs that happen
+    // to sit in the same directory.
+    const lockPath = defaultLockPath(configPath);
     this.election = new LeaderElection(lockPath, LEADER_HEARTBEAT_MS, {
       onAcquire: () => {
         try {
@@ -345,28 +341,38 @@ class ChirinController implements vscode.Disposable {
     this.configPollTimer.unref?.();
   }
 
-  /** If the config changed, rebuild the watch only when it passes validation. */
+  /**
+   * Rebuilds the watch when the config changed and passes validation.
+   *
+   * Which polls are worth acting on is decided by the ConfigTracker; everything here is how
+   * the outcome is reported.
+   */
   private applyConfigChange(configPath: string): void {
-    const text = readConfigText(configPath);
-    if (text === this.configText) return;
-    // Remember rejected content as the baseline too; otherwise the same content would warn
-    // on every tick. Once the user fixes and saves, the content changes again and is
-    // re-evaluated.
-    this.configText = text;
-    // If it became unreadable (deleted, or mid-rename), keep the current state and pick it up when it reappears.
-    if (text === undefined) return;
-    try {
-      loadConfig(configPath);
-    } catch (err) {
+    const status = this.configTracker.check(configPath);
+    // Unchanged and healthy: leave the Watcher alone. Rebuilding it would reset the source
+    // baselines and drop the events that arrive in the gap.
+    // Unreadable (deleted, or caught mid-rename): keep the current state and pick it up when
+    // the file comes back.
+    if (status.kind === "unchanged" || status.kind === "unreadable") return;
+    if (status.kind === "rejected") {
       // We can catch broken content mid-save, so validate before switching. This is not
       // triggered by a user action, so no popup: keep watching with the old config and make
       // it noticeable through the log and the status bar (an explicit reload still uses all
       // three channels).
-      log.warn(`config change rejected, keeping the previous config: ${errorMessage(err)}`);
-      this.setState("error", `${errorMessage(err)} (keeping the previous config)`);
+      const message = errorMessage(status.error);
+      // A rejection that is only about permissions is revisited on every poll, so log a given
+      // reason once (setState already collapses an unchanged status bar).
+      if (status.firstReport) {
+        log.warn(`config change rejected, keeping the previous config: ${message}`);
+      }
+      this.setState("error", `${message} (keeping the previous config)`);
       return;
     }
-    log.info("config changed on disk; reloading");
+    log.info(
+      status.changed
+        ? "config changed on disk; reloading"
+        : "the config is valid again; reloading",
+    );
     this.reload();
   }
 

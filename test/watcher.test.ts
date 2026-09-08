@@ -54,140 +54,140 @@ function writeState(base: string, project: string, state: Record<string, unknown
   fs.writeFileSync(path.join(dir, "chirin-notify-state.json"), JSON.stringify(state));
 }
 
-test("a newly discovered file only records ts and does not notify", (t) => {
+test("a newly discovered file only records ts and does not notify", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "done" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 });
 
-test("a change in ts notifies and the template is expanded", (t) => {
+test("a change in ts notifies and the template is expanded", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "first" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "hello" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.title, "T");
   assert.equal(h.notes[0]!.message, "proj1: hello");
 });
 
-test("re-polling with the same ts does not notify (idempotent)", (t) => {
+test("re-polling with the same ts does not notify (idempotent)", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.pollOnce();
-  h.watcher.pollOnce();
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
+  await h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 });
 
-test("a non-matching event does not notify", (t) => {
+test("a non-matching event does not notify", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", { ts: nextTs(), event: "Notification", message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0);
 });
 
-test("invalid JSON and an invalid ts are skipped; a later valid event notifies", (t) => {
+test("invalid JSON and an invalid ts are skipped; a later valid event notifies", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   const file = path.join(h.base, "proj1", ".claude", "chirin-notify-state.json");
   fs.writeFileSync(file, "{ broken json");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0);
 
   writeState(h.base, "proj1", { ts: "not-a-valid-ts!", event: "Stop", message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0);
 
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "recovered" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "proj1: recovered");
 });
 
-test("a state file larger than 64KB is skipped", (t) => {
+test("a state file larger than 64KB is skipped", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m", pad: "x".repeat(70 * 1024) });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0);
 
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "small again" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 });
 
-test("throttle: consecutive events inside the window collapse to one, and notify again once it passes", (t) => {
+test("throttle: consecutive events inside the window collapse to one, and notify again once it passes", async (t) => {
   const h = setup(t); // throttleMs: 3000
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 
   h.clock.now += 1000; // inside the window
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 
   h.clock.now += 3000; // past the window
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 2);
 });
 
-test("a single poll cycle notifies at most 5 times", (t) => {
+test("a single poll cycle notifies at most 5 times", async (t) => {
   const h = setup(t);
   const projects = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
   for (const p of projects) writeState(h.base, p, { ts: nextTs(), event: "Stop", message: p });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   for (const p of projects) writeState(h.base, p, { ts: nextTs(), event: "Stop", message: p });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 5);
 });
 
-test("notifications over the cap are carried to the next cycle rather than dropped permanently", (t) => {
+test("notifications over the cap are carried to the next cycle rather than dropped permanently", async (t) => {
   const h = setup(t);
   const projects = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
   for (const p of projects) writeState(h.base, p, { ts: nextTs(), event: "Stop", message: p });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   for (const p of projects) writeState(h.base, p, { ts: nextTs(), event: "Stop", message: p });
 
-  h.watcher.pollOnce(); // 5 fire; 2 are carried over by the cap (ts unchanged)
+  await h.watcher.pollOnce(); // 5 fire; 2 are carried over by the cap (ts unchanged)
   assert.equal(h.notes.length, 5);
 
   // Next cycle: the earlier 5 are suppressed inside the throttle window and the 2 carried over fire
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 7);
 });
 
-test("control characters in message are removed from the notification", (t) => {
+test("control characters in message are removed from the notification", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", {
     ts: nextTs(),
     event: "Stop",
     message: `evil${BEL}${ESC}[31mred`,
   });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "proj1: evil[31mred");
   assert.ok(!h.notes[0]!.message.includes(BEL));
   assert.ok(!h.notes[0]!.message.includes(ESC));
 });
 
-test("an event over 64 chars or missing is treated as 'unknown'", (t) => {
+test("an event over 64 chars or missing is treated as 'unknown'", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "stop",
@@ -203,14 +203,14 @@ test("an event over 64 chars or missing is treated as 'unknown'", (t) => {
     },
   ]);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", { ts: nextTs(), event: "S".repeat(65), message: "m" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "unknown event: unknown");
 });
 
-test("contains and regex matches work too", (t) => {
+test("contains and regex matches work too", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "waiting",
@@ -226,44 +226,44 @@ test("contains and regex matches work too", (t) => {
     },
   ]);
   writeState(h.base, "proj1", { ts: nextTs(), event: "x", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   writeState(h.base, "proj1", {
     ts: nextTs(),
     event: "permission_request",
     message: "m",
     cwd: "/work/app",
   });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.deepEqual(h.notes.map((n) => n.message).sort(), ["in work", "waiting: proj1"]);
 });
 
-test("re-expanding the glob brings a new project into the watch set", (t) => {
+test("re-expanding the glob brings a new project into the watch set", async (t) => {
   const h = setup(t);
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.watcher.targetCount(), 1);
 
   // A new project created before the re-expansion is picked up by the next refreshTargets
   writeState(h.base, "proj2", { ts: nextTs(), event: "Stop", message: "new" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0); // not yet a watch target
 
   h.watcher.refreshTargets();
   assert.equal(h.watcher.targetCount(), 2);
-  h.watcher.pollOnce(); // first discovery: records only
+  await h.watcher.pollOnce(); // first discovery: records only
   assert.equal(h.notes.length, 0);
 
   writeState(h.base, "proj2", { ts: nextTs(), event: "Stop", message: "go" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "proj2: go");
 });
 
-test("state for a file that left the watch set is discarded, and a rediscovery is a first read", (t) => {
+test("state for a file that left the watch set is discarded, and a rediscovery is a first read", async (t) => {
   const h = setup(t);
   const ts = nextTs();
   writeState(h.base, "proj1", { ts, event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   fs.rmSync(path.join(h.base, "proj1"), { recursive: true });
   h.watcher.refreshTargets();
@@ -271,11 +271,11 @@ test("state for a file that left the watch set is discarded, and a rediscovery i
 
   // Bringing it back with the same ts is a "first discovery", so it does not notify
   writeState(h.base, "proj1", { ts, event: "Stop", message: "m" });
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 
   writeState(h.base, "proj1", { ts: nextTs(), event: "Stop", message: "back" });
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 });
 
@@ -289,7 +289,7 @@ test("the number of watch targets is truncated at the cap (1024)", (t) => {
   assert.equal(h.watcher.targetCount(), 1024);
 });
 
-test("a state file whose parent directory is a symlink is skipped", (t) => {
+test("a state file whose parent directory is a symlink is skipped", async (t) => {
   const h = setup(t);
   // Replace proj1/.claude with a symlink pointing at an external directory
   const outside = path.join(h.base, "outside");
@@ -302,10 +302,10 @@ test("a state file whose parent directory is a symlink is skipped", (t) => {
   fs.mkdirSync(path.join(h.base, "proj1"), { recursive: true });
   fs.symlinkSync(outside, claudeDir);
 
-  h.watcher.runOnce(); // first discovery (records only) ... but the symlinked parent means it is skipped unread
+  await h.watcher.runOnce(); // first discovery (records only) ... but the symlinked parent means it is skipped unread
   writeState(h.base, "proj1b", { ts: nextTs(), event: "Stop", message: "ok" });
   h.watcher.refreshTargets();
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   // "leaked" behind the symlink never shows up in a notification
   assert.ok(!h.notes.some((n) => n.message.includes("leaked")));
 });

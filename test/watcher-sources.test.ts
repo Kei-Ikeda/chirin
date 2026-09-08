@@ -43,7 +43,7 @@ function writeLog(base: string, project: string, content: string): string {
 
 // --- through log-lines --------------------------------------------------
 
-test("log-lines: only the appended lines that match are notified", (t) => {
+test("log-lines: only the appended lines that match are notified", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -54,16 +54,16 @@ test("log-lines: only the appended lines that match are notified", (t) => {
     },
   ]);
   writeLog(h.base, "proj1", "INFO started\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "INFO ok\nERROR boom\nINFO fine\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "proj1: ERROR boom");
 });
 
-test("log-lines: several matches in one cycle collapse into a single notification carrying count", (t) => {
+test("log-lines: several matches in one cycle collapse into a single notification carrying count", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -74,16 +74,16 @@ test("log-lines: several matches in one cycle collapse into a single notificatio
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "ERROR a\nERROR b\nERROR c\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   // Even a burst produces one notification. The body is the latest line plus the count
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "3 hit(s): ERROR c");
 });
 
-test("log-lines: nothing is notified when no line matches", (t) => {
+test("log-lines: nothing is notified when no line matches", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -94,13 +94,13 @@ test("log-lines: nothing is notified when no line matches", (t) => {
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "INFO a\nDEBUG b\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 0);
 });
 
-test("log-lines: two rules watching the same file do not interfere", (t) => {
+test("log-lines: two rules watching the same file do not interfere", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -118,14 +118,14 @@ test("log-lines: two rules watching the same file do not interfere", (t) => {
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "ERROR x\nWARN y\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.deepEqual(h.notes.map((n) => n.message).sort(), ["E: ERROR x", "W: WARN y"]);
 });
 
-test("log-lines: when two rules match the same line, both are notified", (t) => {
+test("log-lines: when two rules match the same line, both are notified", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "rule-a",
@@ -143,17 +143,17 @@ test("log-lines: when two rules match the same line, both are notified", (t) => 
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "ERROR boom\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   // One line matches both. Sharing the source must not let dedup drop either one
   assert.deepEqual(h.notes.map((n) => n.message).sort(), ["A: ERROR boom", "B: ERROR boom"]);
 });
 
 // --- through file-meta --------------------------------------------------
 
-test("file-meta + match any: a change alone is enough to notify", (t) => {
+test("file-meta + match any: a change alone is enough to notify", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "any-change",
@@ -166,18 +166,18 @@ test("file-meta + match any: a change alone is enough to notify", (t) => {
   const dir = path.join(h.base, "proj1");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "data.bin"), "abc");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 
   fs.writeFileSync(path.join(dir, "data.bin"), "abcdef");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "proj1/data.bin changed (6 bytes)");
 });
 
 // --- mixed --------------------------------------------------------------
 
-test("rules using different sources coexist in the same directory", (t) => {
+test("rules using different sources coexist in the same directory", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "state",
@@ -198,7 +198,7 @@ test("rules using different sources coexist in the same directory", (t) => {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ ts: "1-a", event: "Stop" }));
   fs.writeFileSync(path.join(dir, "app.log"), "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 
   fs.writeFileSync(
@@ -206,11 +206,11 @@ test("rules using different sources coexist in the same directory", (t) => {
     JSON.stringify({ ts: "2-b", event: "Stop", message: "done" }),
   );
   fs.appendFileSync(path.join(dir, "app.log"), "ERROR bad\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.deepEqual(h.notes.map((n) => n.message).sort(), ["log: ERROR bad", "state: done"]);
 });
 
-test("json-state: arbitrary fields are usable in a template", (t) => {
+test("json-state: arbitrary fields are usable in a template", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "branch",
@@ -223,21 +223,21 @@ test("json-state: arbitrary fields are usable in a template", (t) => {
   const dir = path.join(h.base, "proj1");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ ts: "1-a", branch: "dev" }));
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   assert.equal(h.notes.length, 0);
 
   fs.writeFileSync(
     path.join(dir, "state.json"),
     JSON.stringify({ ts: "2-b", event: "Push", branch: "main" }),
   );
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.message, "main @ proj1 (Push)");
 });
 
 // --- caps and carry-over ------------------------------------------------
 
-test("anything over the notification cap is carried to the next cycle (through the sources too)", (t) => {
+test("anything over the notification cap is carried to the next cycle (through the sources too)", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -249,17 +249,17 @@ test("anything over the notification cap is carried to the next cycle (through t
   ]);
   const projects = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
   for (const p of projects) writeLog(h.base, p, "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
 
   for (const p of projects) fs.appendFileSync(path.join(h.base, p, "app.log"), "ERROR x\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 5, "the cap is 5 per cycle");
 
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 7, "the remaining 2 are notified next cycle (never dropped permanently)");
 });
 
-test("aggregation inside the throttle window is suppressed and resumes once it passes", (t) => {
+test("aggregation inside the throttle window is suppressed and resumes once it passes", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -271,26 +271,26 @@ test("aggregation inside the throttle window is suppressed and resumes once it p
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   const file = path.join(h.base, "proj1", "app.log");
 
   fs.appendFileSync(file, "ERROR 1\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 
   h.clock.now += 1000; // inside the window
   fs.appendFileSync(file, "ERROR 2\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
 
   h.clock.now += 3000; // past the window
   fs.appendFileSync(file, "ERROR 3\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 2);
   assert.equal(h.notes[1]!.message, "ERROR 3");
 });
 
-test("subtitle is template-expanded and sanitized too", (t) => {
+test("subtitle is template-expanded and sanitized too", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -305,9 +305,9 @@ test("subtitle is template-expanded and sanitized too", (t) => {
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "ERROR a\nERROR b\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
 
   assert.equal(h.notes.length, 1);
   assert.equal(h.notes[0]!.title, "app");
@@ -315,7 +315,7 @@ test("subtitle is template-expanded and sanitized too", (t) => {
   assert.equal(h.notes[0]!.message, "ERROR b");
 });
 
-test("an unset subtitle reaches the notifier as undefined", (t) => {
+test("an unset subtitle reaches the notifier as undefined", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -326,13 +326,13 @@ test("an unset subtitle reaches the notifier as undefined", (t) => {
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), "ERROR x\n");
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes[0]!.subtitle, undefined);
 });
 
-test("control characters in subtitle are removed too (when an untrusted field is interpolated)", (t) => {
+test("control characters in subtitle are removed too (when an untrusted field is interpolated)", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -343,15 +343,15 @@ test("control characters in subtitle are removed too (when an untrusted field is
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   const esc = String.fromCharCode(0x1b);
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), `ERROR ${esc}[31mred\n`);
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.ok(!h.notes[0]!.subtitle!.includes(esc));
 });
 
-test("control characters in the notification body are removed even when they come from a log line", (t) => {
+test("control characters in the notification body are removed even when they come from a log line", async (t) => {
   const h = setup(t, (base) => [
     {
       id: "errors",
@@ -362,11 +362,11 @@ test("control characters in the notification body are removed even when they com
     },
   ]);
   writeLog(h.base, "proj1", "seed\n");
-  h.watcher.runOnce();
+  await h.watcher.runOnce();
   const esc = String.fromCharCode(0x1b);
   const bel = String.fromCharCode(0x07);
   fs.appendFileSync(path.join(h.base, "proj1", "app.log"), `ERROR ${esc}]0;pwn${bel} x\n`);
-  h.watcher.pollOnce();
+  await h.watcher.pollOnce();
   assert.equal(h.notes.length, 1);
   assert.ok(!h.notes[0]!.message.includes(esc));
   assert.ok(!h.notes[0]!.message.includes(bel));

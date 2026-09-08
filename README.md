@@ -261,12 +261,15 @@ All of them are `scope: application` (user settings only). That is deliberate, s
 
 A VS Code extension host is one process per window. Left alone, three open windows would notify
 three times for the same event, so chirin's windows contend for a lock file in the same
-directory as the config (`watcher.lock`, mode 0600) and **only the window that becomes leader
-watches**.
+directory as the config (`watcher-<digest>.lock`, mode 0600) and **only the window that
+becomes leader watches**. The digest is taken from the config file's resolved path, so two
+configs living side by side get a lock each; equivalent paths to the same config (through a
+symlinked directory, or with different casing on a case-insensitive volume) resolve to one.
 
 - Closing the leader's window releases the lock immediately and another window takes over
 - If the leader is force-quit, another window detects the missing heartbeats and takes over. The heartbeat is a fixed 1 second, deliberately independent of `pollIntervalMs`: the lock goes stale after five missed heartbeats (5 seconds) and followers retry every 5 seconds, so the handover completes within roughly 10 seconds regardless of how `pollIntervalMs` is set
 - `chirin.configPath` is `scope: application`, so it is shared by every window in the profile. That means a single lock, and exactly one watching window among those opened in the same profile
+- The lock file was named `watcher.lock` up to 1.0.2. **Restart every window after upgrading**: a window still running the older build contends for the old name and would watch in parallel with a new one. The leftover `watcher.lock` is inert and can be deleted
 
 ## Config reference
 
@@ -352,11 +355,18 @@ The default when `field` is omitted varies by source type (`json-state`→`messa
 characters at runtime (a ReDoS defense).
 
 Nested quantifiers prone to catastrophic backtracking (`(a+)+`, for instance) are rejected at
-startup. If one slips through, a runtime safety net remains: the time a `regex` rule spends
-matching one file's events in a poll cycle is measured afterwards, and a rule that exceeds
-100ms is disabled for the rest of the session with a warning. That bounds a sustained slowdown
-to a single delay, but it is not a hard limit: it cannot interrupt an evaluation already under
-way, and on a `log-lines` source a large append can trip it for a benign pattern.
+startup, but that check is a heuristic and other shapes get through it (`(a|aa)+$` is one).
+So `regex` matching does not run on the extension-host thread at all: it is handed to a worker
+thread, one round trip per rule per poll cycle. A rule whose match does not come back within
+1 second has its worker **terminated** — which is the only thing that stops a runaway
+evaluation — and the rule is disabled for the rest of the session with a warning. The window,
+the poll loop and the leader heartbeat keep running throughout.
+
+The limits that remain: a rule disabled this way stays disabled until the config is reloaded,
+and on a `log-lines` source a large enough append could in principle exhaust the budget for a
+benign pattern (the budget is deliberately wide, since exceeding it costs a worker thread
+rather than the editor). Notifications from a `regex` rule are delivered when its match comes
+back, so they arrive within the same poll cycle rather than synchronously with it.
 
 ### Source types
 
@@ -498,7 +508,7 @@ comments next to the code instead, so it cannot drift out of sync.
 | 5 | **Zero npm dependencies** (Node's standard library and the VS Code API only) | Eliminates supply-chain risk and keeps the code auditable. A primary selling point |
 | 6 | Notifications run `/usr/bin/osascript` with a **fixed script plus argv** | The absolute path removes any dependence on PATH. The script body is a constant and data travels only through argv, which closes off AppleScript injection |
 | 7 | The config lives in `~/.config/chirin/` (host side, outside the workspace) | Inside the workspace, the container could tamper with the rules |
-| 8 | On startup and when a file joins the watch set, **only `ts` is recorded; nothing is notified**. The one exception is a file first observed *missing* at a watched path: its appearance is itself a new event, and it notifies on the first valid read | Prevents past events from notifying every time the extension host restarts, without dropping the very first notification after a hook is installed (the state file does not exist until the first event) |
+| 8 | On startup and when a file joins the watch set, **only `ts` is recorded; nothing is notified**. That reading happens as watching starts, not on the first poll. The one exception is a file first observed *missing* at a watched path: its appearance is itself a new event, and it notifies on the first valid read | Prevents past events from notifying every time the extension host restarts, without dropping the very first notification after a hook is installed (the state file does not exist until the first event). Leaving the baseline to the first poll would misread anything written in that gap - up to a whole `pollIntervalMs`, exactly when a freshly installed hook fires - as pre-existing state |
 | 9 | Runs as a **UI extension** (`extensionKind: ["ui"]`) | A workspace extension runs on the in-container extension host, moving chirin itself onto the untrusted side and rendering both sanitization and the config permission checks meaningless |
 | 10 | Multiple windows are handled by **leader election through a lock file** | The extension host is one process per window and the throttle is an in-process Map. Without suppression, one event notifies once per window |
 | 11 | Config changes are applied automatically, with **every window polling the content** | Only the leader notifies, but each window holds the config as a snapshot taken at `start()`. Reloading anywhere but the leader would have no effect, and a promoted follower would run on a stale config. Running detection in every window makes the outcome independent of where the edit happened |
@@ -515,7 +525,7 @@ comments next to the code instead, so it cannot drift out of sync.
 | Link injection into the in-window toast (phishing) | The VS Code notification API renders `[label](url)` in the body as a clickable link. `](` is broken right before display so it never forms link syntax |
 | Control characters and escape sequences | Sanitization (removing U+0000–U+001F, U+007F and the rest) plus length limits |
 | Memory exhaustion through a huge file | stat before reading, then reject or read only the tail according to the per-source-type limit |
-| Malicious input to a user-defined regex (ReDoS) | The match target is capped at 200 characters. The pattern length is capped at 256, and nested unbounded quantifiers are rejected at load |
+| Malicious input to a user-defined regex (ReDoS) | The match target is capped at 200 characters. The pattern length is capped at 256, and nested unbounded quantifiers are rejected at load. Matching itself runs in a worker thread, which is terminated once it exceeds its budget, so a pattern that gets past the load-time check cannot stall the extension host |
 | Config tampering | Kept outside the workspace. Refused at startup if the file or its directory is group/other writable, or if the file is a symlink. Warned about if it sits inside the workspace |
 | Notification flooding | A throttle per rule x file (default 5000ms) plus at most 5 notifications per poll cycle |
 
@@ -524,7 +534,8 @@ looks redundant.
 
 ### The parts of the code that look stranger than they are
 
-- **`src/leader.ts`** — the lock operations (`rename` → validate → restore with `link`, an in-place write to an fd rather than a rename) are each a defense against a specific race that produces two leaders, i.e. duplicate notifications. Every one of them is explained in a comment at the point it happens. The heartbeat is a fixed 1s, deliberately decoupled from `pollIntervalMs`, so that all windows measure lock freshness with the same yardstick
+- **`src/leader.ts`** — the lock operations (write to a private file then publish it with `link`, `rename` → validate → restore with `link`, an in-place write to an fd rather than a rename) are each a defense against a specific race that produces two leaders, i.e. duplicate notifications. Every one of them is explained in a comment at the point it happens. A lock operation that fails is also classified: a lost race leaves the window an ordinary follower, while a permission or I/O failure is reported as "cannot tell who is watching" rather than as healthy following. The heartbeat is a fixed 1s, deliberately decoupled from `pollIntervalMs`, so that all windows measure lock freshness with the same yardstick
+- **`src/regexMatcher.ts` / `src/regexWorker.ts`** — user-configured regular expressions run in a worker thread purely so a runaway match can be stopped. No check on the evaluating thread can interrupt one, so the budget is enforced by terminating the worker
 - **`src/fileread.ts`** — `O_NOFOLLOW` / `O_NONBLOCK` plus an `fstat` after open exist to survive a symlink swap, a FIFO in place of a file, and a TOCTOU replacement between stat and read. The layer deliberately makes no decision about size limits; that belongs to the source adapters
 - **`src/glob.ts`** — the per-directory and per-pattern caps bound an attack where the container fills the watched hierarchy with directories. Truncation is always warned about, never silent
 - **Notifications stopping silently is the worst failure.** Several choices follow from that alone: a missing `background_tasks` counts as 0, a config that fails to parse keeps the previous one running, and the status bar shows a distinct state when it cannot tell whether any window is watching
@@ -557,8 +568,9 @@ npm run package           # produce the .vsix
 
 Opening this repository in VS Code and pressing `F5` launches an extension development host window.
 
-The core (`sanitize` / `glob` / `jsonc` / `fileread` / `sources` / `watcher` / `config` /
-`leader`) does not depend on the VS Code API. Only four files touch VS Code —
+The core (`sanitize` / `glob` / `jsonc` / `fileread` / `sources` / `watcher` / `regexMatcher` /
+`regexWorker` / `config` / `configWatch` / `hookSettings` / `leader`) does not depend on the
+VS Code API. Only four files touch VS Code —
 `extension.ts`, `commands.ts`, `vscodeLog.ts` and `vscodeNotifier.ts` — and the tests run on
 `node:test` alone. That boundary is deliberate, so please do not import `vscode` into the core.
 

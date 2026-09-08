@@ -155,8 +155,8 @@ export class LeaderElection {
       fd = fs.openSync(this.lockPath, "r+");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // The lock is gone (a cleanup tool, say). Always recreate with wx, and demote
-      // gracefully if another window has already created one.
+      // The lock is gone (a cleanup tool, say). Always recreate through the atomic publish,
+      // and demote gracefully if another window has already published one.
       if (this.recreateLock()) return;
       log.warn("lost leadership: the watcher lock was recreated by another window");
       this.demote();
@@ -194,15 +194,43 @@ export class LeaderElection {
     this.callbacks.onRelease();
   }
 
-  /** Recreates a vanished lock with wx. Returns false if another window's lock already exists. */
+  /** Recreates a vanished lock. Returns false if another window's lock already exists. */
   private recreateLock(): boolean {
     fs.mkdirSync(path.dirname(this.lockPath), { recursive: true, mode: 0o700 });
+    return this.publishLock();
+  }
+
+  /**
+   * Makes our lock visible at lockPath, complete on the very first sight of it.
+   * Returns false when another window's lock is already there; every other failure throws
+   * (it is a persistent fault, not a lost race - see the tick failure counter).
+   *
+   * Creating the file with `wx` and writing the JSON afterwards would not do: between the two
+   * operations the lock is visible but empty, and a window that reads it then parses nothing,
+   * judges it corrupted, renames it aside and creates its own - after which our write still
+   * succeeds against the displaced fd and we believe we hold a lock that nobody can see. Two
+   * leaders, two notifications.
+   * So write the content into a private temporary file first and publish it with link(),
+   * which is atomic and refuses to overwrite: whatever becomes visible at lockPath is a
+   * complete lock, and only one window can publish it.
+   */
+  private publishLock(): boolean {
+    const staging = `${this.lockPath}.new-${process.pid}-${crypto.randomUUID()}`;
+    fs.writeFileSync(staging, this.serialize(), { mode: 0o600, flag: "wx" });
     try {
-      fs.writeFileSync(this.lockPath, this.serialize(), { mode: 0o600, flag: "wx" });
+      fs.linkSync(staging, this.lockPath);
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw err;
+    } finally {
+      // The published lock keeps its own link, so removing the staging name never removes it.
+      // Only ever our own file, so this cannot delete another owner's lock.
+      try {
+        fs.unlinkSync(staging);
+      } catch (err) {
+        log.warn(`failed to remove a temporary lock file: ${errorMessage(err)}`);
+      }
     }
   }
 
@@ -241,7 +269,7 @@ export class LeaderElection {
 
   /**
    * Attempts to take the lock.
-   *  1. If O_EXCL creates it, it is definitively ours (atomic, so no race)
+   *  1. If publishLock links it into place, it is definitively ours (atomic, so no race)
    *  2. If it already exists, check the freshness of ts and steal it via rename when stale
    *
    * A liveness probe on the pid (`process.kill(pid, 0)`) is deliberately not used: the ts
@@ -249,12 +277,7 @@ export class LeaderElection {
    */
   private acquireLock(): boolean {
     fs.mkdirSync(path.dirname(this.lockPath), { recursive: true, mode: 0o700 });
-    try {
-      fs.writeFileSync(this.lockPath, this.serialize(), { mode: 0o600, flag: "wx" });
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
+    if (this.publishLock()) return true;
 
     const current = this.readLock();
     // An unreadable, corrupted lock would block everyone from being promoted if left alone, so treat it as stealable
@@ -290,9 +313,14 @@ export class LeaderElection {
     const stale = `${this.lockPath}.stale-${process.pid}-${crypto.randomUUID()}`;
     try {
       fs.renameSync(this.lockPath, stale);
-    } catch {
-      // Another window took it over first (or the owner released it). Re-read on the next tick.
-      return false;
+    } catch (err) {
+      // ENOENT means another window took it over first (or the owner released it): an
+      // expected race, so stay a follower and re-read on the next tick.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      // Anything else (a directory we cannot write to, an I/O error) is a persistent fault.
+      // Reporting it as an ordinary lost race would display "another window is watching"
+      // when no window is, so let it reach the tick failure counter instead.
+      throw err;
     }
     try {
       // If an earlier thief recreated the lock between our staleness check and the rename,
@@ -301,26 +329,27 @@ export class LeaderElection {
       const moved = this.readLockAt(stale);
       if (moved !== null && this.isLockFresh(moved.ts)) {
         try {
-          // Restoring with rename could clobber a third lock created with wx in the
-          // meantime, so restore with link instead (giving up on EEXIST if one exists.
-          // The displaced owner demotes on its next heartbeat re-read, so there is no
-          // two-leader window).
+          // Restoring with rename could clobber a third lock published in the meantime, so
+          // restore with link instead (giving up on EEXIST if one exists. The displaced
+          // owner demotes on its next heartbeat re-read, so there is no two-leader window).
           fs.linkSync(stale, this.lockPath);
         } catch {
           // A failed restore is left to the self-healing described above
         }
         return false;
       }
-      // If another window created one between the takeover and now, this raises EEXIST and we are not promoted
-      fs.writeFileSync(this.lockPath, this.serialize(), { mode: 0o600, flag: "wx" });
-      return true;
-    } catch {
-      return false;
+      // If another window published one between the takeover and now, publishLock returns
+      // false and we are not promoted
+      return this.publishLock();
     } finally {
+      // Ignore cleanup failures (a leftover displaced file does not block the next steal).
+      // If the takeover failed part-way and the displaced lock did belong to someone alive
+      // after all, removing it costs nothing: that owner finds it gone on its next heartbeat
+      // and recreates it under its own name, so there is still only one leader.
       try {
         fs.unlinkSync(stale);
       } catch {
-        // Ignore cleanup failures (a leftover displaced file does not block the next steal)
+        // Nothing to do about it
       }
     }
   }
@@ -341,7 +370,15 @@ export class LeaderElection {
       return; // if the lock is already gone (stolen or cleaned up) there is nothing to release
     }
     try {
-      if (this.readLockAt(moved)?.owner !== this.owner) {
+      let owner: string | undefined;
+      try {
+        owner = this.readLockAt(moved)?.owner;
+      } catch (err) {
+        // Releasing must not throw (it runs from stop() and from a failed promotion), and an
+        // unconfirmed lock is treated as somebody else's: restore it rather than delete it.
+        log.warn(`could not confirm the watcher lock before releasing it: ${errorMessage(err)}`);
+      }
+      if (owner !== this.owner) {
         try {
           fs.linkSync(moved, this.lockPath);
         } catch {
@@ -367,12 +404,21 @@ export class LeaderElection {
     return this.readLockAt(this.lockPath);
   }
 
+  /**
+   * Reads a lock file. Absent or unparsable content is null (= stealable); a read that fails
+   * for any other reason throws.
+   *
+   * Swallowing a permission or I/O error here would turn a persistent fault into "the lock is
+   * corrupted", and the steal that follows would fail in the same way - reported as an
+   * ordinary lost race. The failure has to stay visible so the tick counter can report it.
+   */
   private readLockAt(p: string): LockData | null {
     let raw: string;
     try {
       raw = fs.readFileSync(p, "utf8");
-    } catch {
-      return null;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
     }
     return this.parseLock(raw);
   }
@@ -392,7 +438,44 @@ export class LeaderElection {
   }
 }
 
-/** Default path of the lock file. Kept in the same directory as the config (outside the workspace). */
-export function defaultLockPath(configDir: string): string {
-  return path.join(configDir, "watcher.lock");
+/**
+ * Default path of the lock file. Kept in the same directory as the config (outside the
+ * workspace), and named after the config file so that leadership is per configuration.
+ *
+ * Keying it on the directory alone made two configs living side by side
+ * (`.../a.json` and `.../b.json`) contend for one lock, so only one of them was ever watched.
+ * The name carries a digest of the config's real path: equivalent paths to the same file
+ * (a symlinked directory, a different case on a case-insensitive volume) resolve to the same
+ * lock, while genuinely different files get their own.
+ *
+ * Note this renames the lock: a window still running an older build would use the previous
+ * `watcher.lock` and could watch in parallel. Restart every window after upgrading (see the
+ * README's Design notes).
+ */
+export function defaultLockPath(configPath: string): string {
+  const canonical = canonicalConfigPath(configPath);
+  const digest = crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return path.join(path.dirname(canonical), `watcher-${digest}.lock`);
+}
+
+/**
+ * The form of the config path every window agrees on: symlinks resolved, and the case
+ * normalized as the (case-insensitive by default) volume stores it.
+ * Resolving the directory as a fallback covers a config that does not exist yet, since the
+ * ambiguity between two paths to the same file lives in the directory part.
+ */
+function canonicalConfigPath(configPath: string): string {
+  const resolved = path.resolve(configPath);
+  const real = tryRealpath(resolved);
+  if (real !== undefined) return real;
+  const dir = tryRealpath(path.dirname(resolved));
+  return dir === undefined ? resolved : path.join(dir, path.basename(resolved));
+}
+
+function tryRealpath(p: string): string | undefined {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
 }

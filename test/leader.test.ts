@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { LeaderElection, defaultLockPath } from "../src/leader.js";
 
-/** Places the lock in a per-test tmpdir and removes it afterwards. */
+/** Places the lock beside a config file in a per-test tmpdir and removes it afterwards. */
 function setup(t: { after(fn: () => void): void }): string {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-leader-"));
   t.after(() => {
@@ -13,7 +13,7 @@ function setup(t: { after(fn: () => void): void }): string {
     fs.chmodSync(base, 0o700);
     fs.rmSync(base, { recursive: true, force: true });
   });
-  return defaultLockPath(base);
+  return defaultLockPath(path.join(base, "config.json"));
 }
 
 interface Spy {
@@ -132,8 +132,8 @@ test("a lock with a far-future ts is stolen (the clock rolled back)", (t) => {
 
   assert.equal(election.isLeader(), true);
   assert.equal(spy.acquired, 1);
-  // No displaced file is left behind after a steal
-  assert.deepEqual(fs.readdirSync(path.dirname(lockPath)), ["watcher.lock"]);
+  // No displaced or staging file is left behind after a steal
+  assert.deepEqual(fs.readdirSync(path.dirname(lockPath)), [path.basename(lockPath)]);
 });
 
 test("a lock with a slightly future ts is not stolen (a live leader keeps it)", (t) => {
@@ -377,4 +377,289 @@ test("once lock operations recover, the follower returns to the normal path", as
 
   assert.equal(election.isLeader(), true);
   assert.equal(spy.acquired, 1);
+});
+
+// --- lock identity (one lock per config file) -----------------------------
+
+/** A tmpdir that is cleaned up after the test. */
+function tmpdir(t: { after(fn: () => void): void }): string {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-lockid-"));
+  t.after(() => {
+    fs.chmodSync(base, 0o700);
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  return base;
+}
+
+test("the lock is named after the config file, beside it", (t) => {
+  const base = tmpdir(t);
+  const configPath = path.join(base, "config.json");
+  fs.writeFileSync(configPath, "{}", { mode: 0o600 });
+
+  const lockPath = defaultLockPath(configPath);
+
+  // The README documents this shape, and an upgrade note depends on it having changed
+  assert.equal(path.dirname(lockPath), fs.realpathSync.native(base));
+  assert.match(path.basename(lockPath), /^watcher-[0-9a-f]{16}\.lock$/);
+});
+
+test("two configs in the same directory each get their own leader", (t) => {
+  const base = tmpdir(t);
+  fs.writeFileSync(path.join(base, "a.json"), "{}", { mode: 0o600 });
+  fs.writeFileSync(path.join(base, "b.json"), "{}", { mode: 0o600 });
+
+  const a = makeElection(t, defaultLockPath(path.join(base, "a.json")));
+  const b = makeElection(t, defaultLockPath(path.join(base, "b.json")));
+
+  a.election.start();
+  b.election.start();
+
+  // Keying the lock on the directory alone made the second config's watcher never start
+  assert.equal(a.election.isLeader(), true);
+  assert.equal(b.election.isLeader(), true);
+});
+
+test("equivalent paths to one config still contend for a single lock", (t) => {
+  const base = tmpdir(t);
+  const configPath = path.join(base, "config.json");
+  fs.writeFileSync(configPath, "{}", { mode: 0o600 });
+  // The same file named through "." and through a symlink to its directory
+  const link = path.join(base, "link");
+  fs.symlinkSync(base, link);
+
+  const direct = defaultLockPath(configPath);
+  assert.equal(defaultLockPath(path.join(base, ".", "config.json")), direct);
+  assert.equal(defaultLockPath(path.join(link, "config.json")), direct);
+
+  const first = makeElection(t, direct);
+  const second = makeElection(t, defaultLockPath(path.join(link, "config.json")));
+  first.election.start();
+  second.election.start();
+
+  assert.equal(first.election.isLeader(), true);
+  assert.equal(second.election.isLeader(), false);
+});
+
+// --- publishing a lock atomically -----------------------------------------
+
+test("the lock is published complete: it is never created by a write to its own path", (t) => {
+  const lockPath = setup(t);
+  const { election } = makeElection(t, lockPath);
+  t.after(() => mock.restoreAll());
+
+  // Creating the file at lockPath and writing the JSON into it afterwards leaves it visible
+  // but empty in between, and another window reads that as a corrupted lock it may take over.
+  // The content is therefore written elsewhere and linked into place, so this records every
+  // direct write to the lock path itself - there must be none.
+  const realWriteFileSync = fs.writeFileSync;
+  const directWrites: string[] = [];
+  mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+    if (args[0] === lockPath) directWrites.push(String(args[0]));
+    return realWriteFileSync(...args);
+  });
+
+  election.start();
+  mock.restoreAll();
+
+  assert.equal(election.isLeader(), true);
+  assert.deepEqual(directWrites, [], "the lock was created by writing to its own path");
+});
+
+test("a contender racing the moment before the lock is published does not become a second leader", (t) => {
+  const lockPath = setup(t);
+  const first = makeElection(t, lockPath);
+  const second = makeElection(t, lockPath);
+  t.after(() => mock.restoreAll());
+
+  // Interleave the second election exactly where the first one has prepared its lock but has
+  // not made it visible yet - the point at which the old protocol had already created an
+  // empty file that a contender would take over, leaving both windows leaders.
+  const realLinkSync = fs.linkSync;
+  let interleaved = false;
+  mock.method(fs, "linkSync", (...args: Parameters<typeof fs.linkSync>) => {
+    if (!interleaved && args[1] === lockPath) {
+      interleaved = true;
+      second.election.start();
+    }
+    return realLinkSync(...args);
+  });
+
+  first.election.start();
+  mock.restoreAll();
+
+  assert.equal(interleaved, true, "the interleaving never happened");
+  // Decided at the moment the lock became visible - not corrected by a later heartbeat, by
+  // which point both windows would already have notified.
+  assert.equal(
+    Number(first.election.isLeader()) + Number(second.election.isLeader()),
+    1,
+    "two windows were promoted at once",
+  );
+  assert.equal(first.spy.acquired + second.spy.acquired, 1);
+  // Whatever is visible at the lock path is a complete lock, and nothing else is left behind
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { owner?: unknown };
+  assert.equal(typeof lock.owner, "string");
+  assert.deepEqual(fs.readdirSync(path.dirname(lockPath)), [path.basename(lockPath)]);
+});
+
+test("acquiring, recreating and stealing all leave no staging file behind", async (t) => {
+  const lockPath = setup(t);
+  const dir = path.dirname(lockPath);
+  const { election } = makeElection(t, lockPath, { heartbeatMs: 20 });
+
+  // 1. plain acquisition
+  election.start();
+  assert.deepEqual(fs.readdirSync(dir), [path.basename(lockPath)]);
+
+  // 2. recreation after the lock vanished
+  fs.unlinkSync(lockPath);
+  await sleep(80);
+  assert.deepEqual(fs.readdirSync(dir), [path.basename(lockPath)]);
+
+  // 3. takeover of a stale lock by another election
+  election.stop();
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 999999, owner: "someone-else", ts: Date.now() - 60_000 }),
+    { mode: 0o600 },
+  );
+  const thief = makeElection(t, lockPath, { heartbeatMs: 1000 });
+  thief.election.start();
+  assert.equal(thief.election.isLeader(), true);
+  assert.deepEqual(fs.readdirSync(dir), [path.basename(lockPath)]);
+});
+
+// --- telling a lost race apart from a broken filesystem --------------------
+
+test("a stale lock in an unwritable directory is reported as unknown, not as healthy following", async (t) => {
+  const lockPath = setup(t);
+  // A lock nobody is refreshing any more, in a directory we cannot write to: the takeover
+  // fails for lack of permission, which is not the same thing as losing a race to another
+  // window. Reporting it as following would claim a window is watching when none is.
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 999999, owner: "someone-else", ts: Date.now() - 60_000 }),
+    { mode: 0o600 },
+  );
+  breakLock(lockPath);
+
+  const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
+  election.start();
+  await sleep(80);
+
+  assert.equal(election.isLeader(), false);
+  assert.ok(spy.stalled > 0, "onStalled was not called");
+  assert.equal(spy.followed, 0, "a permission failure was reported as ordinary following");
+  assert.equal(spy.acquired, 0);
+
+  // And it recovers on its own once the directory is writable again
+  repairLock(lockPath);
+  await sleep(40);
+  assert.equal(election.isLeader(), true);
+  assert.equal(spy.acquired, 1);
+});
+
+/** Places a lock nobody is refreshing any more (the window it belonged to was force-quit). */
+function writeStaleLock(lockPath: string): void {
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 999999, owner: "someone-else", ts: Date.now() - 60_000 }),
+    { mode: 0o600 },
+  );
+}
+
+/** Makes one fs function fail with the given errno, as a persistent fault would. */
+function failWith(name: "renameSync" | "readFileSync", code: string, onlyFor?: string): void {
+  const real = fs[name] as (...args: unknown[]) => unknown;
+  mock.method(fs, name, (...args: unknown[]) => {
+    if (onlyFor === undefined || String(args[0]) === onlyFor) {
+      const err: NodeJS.ErrnoException = new Error(`${code}: injected failure`);
+      err.code = code;
+      throw err;
+    }
+    return real(...args);
+  });
+}
+
+test("a takeover that fails for lack of permission is reported as unknown, not as following", async (t) => {
+  const lockPath = setup(t);
+  writeStaleLock(lockPath);
+  t.after(() => mock.restoreAll());
+  // The takeover rename fails persistently. Reading that as "another window got there first"
+  // would claim a window is watching when the stale lock's owner is long gone.
+  failWith("renameSync", "EACCES");
+
+  const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
+  election.start();
+  await sleep(80);
+  mock.restoreAll();
+
+  assert.equal(election.isLeader(), false);
+  assert.ok(spy.stalled > 0, "onStalled was not called");
+  assert.equal(spy.followed, 0, "a permission failure was reported as ordinary following");
+  assert.equal(spy.acquired, 0);
+});
+
+test("a lock we cannot read is reported as unknown rather than taken over", async (t) => {
+  const lockPath = setup(t);
+  writeStaleLock(lockPath);
+  t.after(() => mock.restoreAll());
+  // Unparsable *content* is stealable, but a read that fails leaves us unable to tell whether
+  // a live window owns the lock - taking it over there is how two leaders happen.
+  failWith("readFileSync", "EACCES", lockPath);
+
+  const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
+  election.start();
+  await sleep(80);
+  mock.restoreAll();
+
+  assert.equal(election.isLeader(), false);
+  assert.equal(spy.acquired, 0, "a lock that could not be read was taken over anyway");
+  assert.ok(spy.stalled > 0, "onStalled was not called");
+  assert.equal(spy.followed, 0);
+});
+
+test("a fresh lock held by a live owner stays an ordinary follower", async (t) => {
+  const lockPath = setup(t);
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 999999, owner: "someone-else", ts: Date.now() }),
+    { mode: 0o600 },
+  );
+
+  const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
+  election.start();
+  await sleep(80);
+
+  assert.equal(election.isLeader(), false);
+  assert.ok(spy.followed > 0, "onFollow was not called");
+  assert.equal(spy.stalled, 0, "an expected race was reported as a persistent fault");
+});
+
+test("a lock that disappears mid-takeover is an expected race, not a fault", async (t) => {
+  const lockPath = setup(t);
+  const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
+  t.after(() => mock.restoreAll());
+
+  // A stale lock that another window consumes just before our own rename reaches it
+  fs.writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 999999, owner: "someone-else", ts: Date.now() - 60_000 }),
+    { mode: 0o600 },
+  );
+  const realRenameSync = fs.renameSync;
+  let stolen = false;
+  mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
+    if (!stolen) {
+      stolen = true;
+      fs.unlinkSync(lockPath); // the other window got there first
+    }
+    return realRenameSync(...args);
+  });
+
+  election.start();
+  mock.restoreAll();
+
+  assert.equal(stolen, true, "the interleaving never happened");
+  assert.equal(spy.stalled, 0, "a lost race was reported as a persistent fault");
 });

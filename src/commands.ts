@@ -16,13 +16,14 @@ import {
 } from "./config.js";
 import { CONFIG_TEMPLATE } from "./configTemplate.js";
 import { expandGlobs } from "./glob.js";
+import { mergeHookSettingsText, type HookSettingsExample } from "./hookSettings.js";
 import { errorMessage, log } from "./log.js";
 import { MESSAGE_MAX_LEN, SUBTITLE_MAX_LEN, TITLE_MAX_LEN } from "./notifier.js";
 import { sanitize } from "./sanitize.js";
 import { buildNotifier } from "./vscodeNotifier.js";
 import { renderTemplate } from "./watcher.js";
 
-/** Workspace-relative path of the hook script we install. Also used to identify an existing hook. */
+/** Workspace-relative path of the hook script we install. Also used for the .gitignore entry. */
 const CHIRIN_HOOK_PATH = ".claude/hooks/chirin-notify.sh";
 
 /**
@@ -362,6 +363,9 @@ async function installNotifyScript(
  * environment: a macOS host, with chirin installed, whose config watches this repository.
  * Writing to the shared file would put a personal difference into a committed file and ship
  * a hook that does not work to teammates on other operating systems.
+ *
+ * Only the file I/O lives here; which existing hooks survive the merge is decided by
+ * hookSettings.ts, which is free of `vscode` so that decision can be tested.
  */
 async function mergeHookSettings(
   context: vscode.ExtensionContext,
@@ -370,82 +374,31 @@ async function mergeHookSettings(
   const exampleUri = vscode.Uri.joinPath(context.extensionUri, "hooks", "settings.example.json");
   const example = JSON.parse(
     Buffer.from(await vscode.workspace.fs.readFile(exampleUri)).toString("utf8"),
-  ) as { hooks: Record<string, unknown[]> };
+  ) as HookSettingsExample;
 
   const target = vscode.Uri.joinPath(claudeDir, "settings.local.json");
   const existingRaw = await readFileIfExists(target);
-  let settings: Record<string, unknown> = {};
-  if (existingRaw !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(Buffer.from(existingRaw).toString("utf8"));
-    } catch {
-      // When it cannot be parsed (JSON with comments, say), a mechanical merge is unsafe; leave it to the user
-      void vscode.window.showWarningMessage(
-        ".claude/settings.local.json could not be parsed, so the hooks settings were left unchanged. Please merge them manually.",
-      );
-      return false;
-    }
-    // Arrays, null and scalars parse fine too. Merging into them would either fail on write
-    // or discard the original content entirely (e.g. `[]` would become an `[]` with hooks).
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      void vscode.window.showWarningMessage(
-        ".claude/settings.local.json is not a JSON object, so the hooks settings were left unchanged. Please merge them manually.",
-      );
-      return false;
-    }
-    settings = parsed as Record<string, unknown>;
-  }
-
-  const existingHooks = settings.hooks ?? {};
-  if (typeof existingHooks !== "object" || existingHooks === null || Array.isArray(existingHooks)) {
-    void vscode.window.showWarningMessage(
-      "hooks in .claude/settings.local.json is not a JSON object, so the settings were left unchanged. Please merge them manually.",
-    );
+  const existing = existingRaw === null ? null : Buffer.from(existingRaw).toString("utf8");
+  const merged = mergeHookSettingsText(existing, example);
+  if (merged.kind !== "ok") {
+    // Content we cannot merge mechanically is left untouched and handed back to the user
+    void vscode.window.showWarningMessage(mergeFailureMessage(merged.kind));
     return false;
   }
-  const hooks = existingHooks as Record<string, unknown[]>;
-  for (const [event, entries] of Object.entries(example.hooks)) {
-    const current = Array.isArray(hooks[event]) ? hooks[event] : [];
-    // Remove existing chirin hooks before adding them back. That prevents a double
-    // registration (two notifications) while letting a change to the hook invocation form be
-    // picked up by re-running this command alone.
-    // Dropping whole entries would take the user's own hooks and matchers living in the same
-    // entry with them, so only chirin's commands inside an entry are removed.
-    const others = current
-      .map((entry) => withoutChirinHooks(entry))
-      .filter((entry) => entry !== null);
-    hooks[event] = [...others, ...entries];
-  }
-  settings.hooks = hooks;
-  await vscode.workspace.fs.writeFile(
-    target,
-    Buffer.from(`${JSON.stringify(settings, null, 2)}\n`, "utf8"),
-  );
+  await vscode.workspace.fs.writeFile(target, Buffer.from(merged.text, "utf8"));
   return true;
 }
 
-/**
- * Removes only the hook commands chirin installed from an entry.
- * If non-chirin hooks remain, the entry (matcher and all) is kept; when it becomes empty the
- * result is null (= delete).
- *
- * Matching on the file name alone would silently remove a hook calling a copy the user
- * placed elsewhere themselves (`scripts/chirin-notify.sh`, say). Match on the full install
- * path instead.
- */
-function withoutChirinHooks(entry: unknown): unknown | null {
-  if (typeof entry !== "object" || entry === null) return entry;
-  const { hooks } = entry as { hooks?: unknown };
-  if (!Array.isArray(hooks)) return entry;
-  const kept = hooks.filter((hook) => {
-    if (typeof hook !== "object" || hook === null) return true;
-    const { command } = hook as { command?: unknown };
-    return !(typeof command === "string" && command.includes(CHIRIN_HOOK_PATH));
-  });
-  if (kept.length === hooks.length) return entry;
-  if (kept.length === 0) return null;
-  return { ...(entry as Record<string, unknown>), hooks: kept };
+/** Explains why the hooks settings were left unchanged (one message per unmergeable shape). */
+function mergeFailureMessage(kind: "unparsable" | "not-object" | "hooks-not-object"): string {
+  switch (kind) {
+    case "unparsable":
+      return ".claude/settings.local.json could not be parsed, so the hooks settings were left unchanged. Please merge them manually.";
+    case "not-object":
+      return ".claude/settings.local.json is not a JSON object, so the hooks settings were left unchanged. Please merge them manually.";
+    case "hooks-not-object":
+      return "hooks in .claude/settings.local.json is not a JSON object, so the settings were left unchanged. Please merge them manually.";
+  }
 }
 
 /** Appends the files chirin writes into the workspace to .gitignore (never duplicating an existing line). */
