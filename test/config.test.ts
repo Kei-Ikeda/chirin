@@ -456,6 +456,19 @@ test("loadConfig: rejects a group/other-writable parent directory (0777)", (t) =
   }
 });
 
+test("loadConfig: rejects a parent directory the current user cannot write (0500)", (t) => {
+  const dir = makeTmpDir(t);
+  const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o600);
+  // Traversable and readable, so the config itself loads: only the watcher lock, created in
+  // this directory, would fail -- silently, three heartbeats later.
+  fs.chmodSync(dir, 0o500);
+  try {
+    assert.throws(() => loadConfig(file), /directory must be writable/);
+  } finally {
+    fs.chmodSync(dir, 0o700); // restore permissions so the after hook can rm it
+  }
+});
+
 test("loadConfig: rejects an other-writable file (0602)", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o602);
