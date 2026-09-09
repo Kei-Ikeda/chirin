@@ -234,6 +234,10 @@ function checkConfigFile(configPath: string): void {
   } catch (err) {
     throw new ConfigError(`cannot stat config directory ${dir}: ${errorMessage(err)}`);
   }
+  // uid 0 is accepted so an MDM-provisioned directory can be root-owned. That is not a dead
+  // branch, but it is a narrow one: the mode check just below rules out group/other write and
+  // a non-root process still has to clear W_OK, so on a root-owned directory only a macOS ACL
+  // can grant the write the watcher lock needs.
   if (!isTrustedOwner(dst.uid)) {
     throw new ConfigError(`config directory must be owned by the current user or root: ${dir}`);
   }

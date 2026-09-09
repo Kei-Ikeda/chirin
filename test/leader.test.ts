@@ -671,8 +671,41 @@ function writeStaleLock(lockPath: string): void {
   );
 }
 
+/**
+ * Fails readSync only for the fds opened on the given path.
+ *
+ * readSync takes an fd, not a path, so failWith's onlyFor cannot express this. Failing every
+ * readSync instead would let the test pass on a read that has nothing to do with the lock -
+ * today readRange is the only caller reached from here, but that is not something a test
+ * should depend on.
+ */
+function failReadOfFile(target: string, code: string): void {
+  const realOpen = fs.openSync as (...args: unknown[]) => number;
+  const realClose = fs.closeSync as (...args: unknown[]) => void;
+  const realRead = fs.readSync as (...args: unknown[]) => number;
+  const targetFds = new Set<number>();
+  mock.method(fs, "openSync", ((...args: unknown[]) => {
+    const fd = realOpen(...args);
+    if (String(args[0]) === target) targetFds.add(fd);
+    return fd;
+  }) as typeof fs.openSync);
+  // fd numbers are reused after a close, so stop claiming one as soon as it is released
+  mock.method(fs, "closeSync", ((...args: unknown[]) => {
+    targetFds.delete(args[0] as number);
+    return realClose(...args);
+  }) as typeof fs.closeSync);
+  mock.method(fs, "readSync", ((...args: unknown[]) => {
+    if (targetFds.has(args[0] as number)) {
+      const err: NodeJS.ErrnoException = new Error(`${code}: injected failure`);
+      err.code = code;
+      throw err;
+    }
+    return realRead(...args);
+  }) as typeof fs.readSync);
+}
+
 /** Makes one fs function fail with the given errno, as a persistent fault would. */
-function failWith(name: "renameSync" | "readSync", code: string, onlyFor?: string): void {
+function failWith(name: "renameSync", code: string, onlyFor?: string): void {
   const real = fs[name] as (...args: unknown[]) => unknown;
   mock.method(fs, name, (...args: unknown[]) => {
     if (onlyFor === undefined || String(args[0]) === onlyFor) {
@@ -709,7 +742,7 @@ test("a lock we cannot read is reported as unknown rather than taken over", asyn
   t.after(() => mock.restoreAll());
   // Unparsable *content* is stealable, but a read that fails leaves us unable to tell whether
   // a live window owns the lock - taking it over there is how two leaders happen.
-  failWith("readSync", "EACCES");
+  failReadOfFile(lockPath, "EACCES");
 
   const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
   election.start();
