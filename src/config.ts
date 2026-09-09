@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readRange } from "./fileread.js";
 import { validateGlobPattern } from "./glob.js";
 import { stripJsonComments } from "./jsonc.js";
 import { errorMessage } from "./log.js";
@@ -70,6 +71,7 @@ const SOURCE_TYPES: readonly string[] = ["json-state", "log-lines", "file-meta"]
 // Default used when a rule omits notify.title. Shows the tool name
 // (rules for Claude Code set "Claude Code" explicitly in the config template).
 const DEFAULT_TITLE = "chirin";
+export const MAX_CONFIG_BYTES = 1024 * 1024;
 
 // Cap on the length of a match target. A runtime limit that curbs ReDoS backtracking blowup,
 // shared with the truncation on the watcher side (referenced here as a cap as well, so a
@@ -113,7 +115,7 @@ export function loadConfig(configPath: string): Config {
   checkConfigFile(configPath);
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, "utf8");
+    raw = readConfigFile(configPath, true);
   } catch (err) {
     throw new ConfigError(`cannot read config ${configPath}: ${errorMessage(err)}`);
   }
@@ -138,14 +140,49 @@ export function loadConfig(configPath: string): Config {
  */
 export function readConfigText(configPath: string): string | undefined {
   try {
-    return fs.readFileSync(configPath, "utf8");
+    return readConfigFile(configPath, false);
   } catch {
     return undefined;
   }
 }
 
+/** Both loading and change detection need bounded reads, including after a rejected config. */
+function readConfigFile(configPath: string, checkPermissions: boolean): string {
+  const fd = fs.openSync(
+    configPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+  );
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new ConfigError(`config must be a regular file: ${configPath}`);
+    if (st.size > MAX_CONFIG_BYTES) {
+      throw new ConfigError(`config exceeds ${MAX_CONFIG_BYTES} bytes: ${configPath}`);
+    }
+    if (checkPermissions) checkConfigOwnerAndMode(configPath, st);
+    return readRange(fd, 0, st.size).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function checkConfigOwnerAndMode(configPath: string, st: fs.Stats): void {
+  if (!isTrustedOwner(st.uid)) {
+    throw new ConfigError(`config must be owned by the current user or root: ${configPath}`);
+  }
+  if ((st.mode & 0o022) !== 0) {
+    throw new ConfigError(
+      `config must not be writable by group/other: ${configPath} (fix with: chmod 600 ${configPath})`,
+    );
+  }
+}
+
+/** Root-owned config supports MDM provisioning. Windows has no POSIX uid API. */
+function isTrustedOwner(uid: number): boolean {
+  return typeof process.getuid !== "function" || uid === process.getuid() || uid === 0;
+}
+
 // The config is assumed to live somewhere the container cannot tamper with (outside the
-// workspace). Require a regular file (no symlinks) that is not group/other writable.
+// workspace). Require a regular file (no symlinks) owned by this user or root and not group/other writable.
 // The parent directory must not be group/other writable either: even a hardened file can be
 // swapped wholesale when its directory is writable.
 function checkConfigFile(configPath: string): void {
@@ -160,17 +197,16 @@ function checkConfigFile(configPath: string): void {
   if (!st.isFile()) {
     throw new ConfigError(`config must be a regular file (not a symlink or directory): ${configPath}`);
   }
-  if ((st.mode & 0o022) !== 0) {
-    throw new ConfigError(
-      `config must not be writable by group/other: ${configPath} (fix with: chmod 600 ${configPath})`,
-    );
-  }
+  checkConfigOwnerAndMode(configPath, st);
   const dir = path.dirname(configPath);
   let dst: fs.Stats;
   try {
     dst = fs.statSync(dir); // follow symlinks so the real directory's permissions are checked
   } catch (err) {
     throw new ConfigError(`cannot stat config directory ${dir}: ${errorMessage(err)}`);
+  }
+  if (!isTrustedOwner(dst.uid)) {
+    throw new ConfigError(`config directory must be owned by the current user or root: ${dir}`);
   }
   if ((dst.mode & 0o022) !== 0) {
     throw new ConfigError(

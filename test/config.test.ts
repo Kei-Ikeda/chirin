@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import {
   ConfigError,
   ConfigNotFoundError,
+  MAX_CONFIG_BYTES,
   hasNestedUnboundedQuantifier,
   loadConfig,
   readConfigText,
@@ -345,6 +347,85 @@ test("loadConfig: 0644 (not group/other writable) is allowed", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o644);
   assert.equal(loadConfig(file).rules.length, 1);
+});
+
+/** Changing ownership needs privileges; inject only uid while keeping real file type/mode/size. */
+function mockOwner(t: TestContext, method: "lstatSync" | "statSync" | "fstatSync", uid: number): void {
+  const original = fs[method];
+  t.mock.method(fs, method, ((...args: unknown[]) => {
+    const st = Reflect.apply(original, fs, args) as fs.Stats;
+    st.uid = uid;
+    return st;
+  }) as typeof original);
+}
+
+test("loadConfig: rejects a different file owner despite safe mode bits", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o644);
+  mockOwner(t, "lstatSync", process.getuid!() + 1);
+  assert.throws(() => loadConfig(file), /config must be owned by the current user or root/);
+});
+
+test("loadConfig: rejects a different directory owner despite safe mode bits", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o644);
+  mockOwner(t, "statSync", process.getuid!() + 1);
+  assert.throws(() => loadConfig(file), /config directory must be owned by the current user or root/);
+});
+
+test("loadConfig: accepts root-owned files and directories for managed provisioning", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o644);
+  mockOwner(t, "lstatSync", 0);
+  mockOwner(t, "fstatSync", 0);
+  mockOwner(t, "statSync", 0);
+  assert.equal(loadConfig(file).rules.length, 1);
+  fs.chmodSync(file, 0o666);
+  assert.throws(() => loadConfig(file), /writable by group\/other/, "root ownership does not bypass mode checks");
+});
+
+test("loadConfig: skips uid checks when process.getuid is unavailable (Windows)", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o644);
+  const getuid = process.getuid;
+  Object.defineProperty(process, "getuid", { value: undefined, configurable: true, writable: true });
+  t.after(() => Object.defineProperty(process, "getuid", { value: getuid, configurable: true, writable: true }));
+  mockOwner(t, "lstatSync", 12345);
+  mockOwner(t, "fstatSync", 12345);
+  mockOwner(t, "statSync", 12345);
+  assert.equal(loadConfig(file).rules.length, 1);
+});
+
+test("loadConfig: checks the opened inode's owner as well as the initial path", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o644);
+  mockOwner(t, "fstatSync", process.getuid!() + 1);
+  assert.throws(() => loadConfig(file), /config must be owned by the current user or root/);
+});
+
+test("config reads: reject oversized files before allocating or reading their contents", (t) => {
+  const file = writeConfigFile(makeTmpDir(t), JSON.stringify(baseConfig()), 0o600);
+  fs.truncateSync(file, 1024 * 1024 * 1024); // sparse fixture
+  const read = t.mock.method(fs, "readSync");
+  assert.throws(() => loadConfig(file), /config exceeds/);
+  assert.equal(readConfigText(file), undefined, "change detection must be bounded too");
+  assert.equal(read.mock.callCount(), 0);
+});
+
+test("config reads: accept valid JSON exactly at the byte limit", (t) => {
+  const raw = JSON.stringify(baseConfig()).padEnd(MAX_CONFIG_BYTES);
+  const file = writeConfigFile(makeTmpDir(t), raw, 0o600);
+  assert.equal(loadConfig(file).rules.length, 1);
+  assert.equal(readConfigText(file), raw);
+  fs.appendFileSync(file, " ");
+  assert.throws(() => loadConfig(file), /config exceeds/);
+  assert.equal(readConfigText(file), undefined);
+});
+
+test("readConfigText: refuses symlinks and FIFOs during change detection", (t) => {
+  const dir = makeTmpDir(t);
+  const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o600);
+  const link = path.join(dir, "link.json");
+  fs.symlinkSync(file, link);
+  assert.equal(readConfigText(link), undefined);
+  const fifo = path.join(dir, "fifo.json");
+  execFileSync("/usr/bin/mkfifo", [fifo]);
+  assert.equal(readConfigText(fifo), undefined);
 });
 
 test("loadConfig: rejects a group-writable file (0620)", (t) => {

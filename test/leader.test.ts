@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock, test } from "node:test";
-import { LeaderElection, defaultLockPath } from "../src/leader.js";
+import { MAX_LOCK_BYTES, LeaderElection, defaultLockPath } from "../src/leader.js";
 
 /** Places the lock beside a config file in a per-test tmpdir and removes it afterwards. */
 function setup(t: { after(fn: () => void): void }): string {
@@ -178,6 +179,108 @@ test("a corrupted lock is stolen (never leaving a state where nobody can be prom
   election.start();
 
   assert.equal(election.isLeader(), true);
+});
+
+test("an oversized lock is rejected before reading, then replaced with a bounded lock", (t) => {
+  const lockPath = setup(t);
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, owner: "foreign", ts: Date.now() }));
+  fs.truncateSync(lockPath, 1024 * 1024 * 1024); // sparse: do not allocate a huge fixture
+  const read = t.mock.method(fs, "readSync");
+  const { election } = makeElection(t, lockPath);
+
+  election.start();
+
+  assert.equal(election.isLeader(), true);
+  assert.equal(read.mock.callCount(), 0, "neither the original nor displaced oversized lock is read");
+  assert.ok(fs.statSync(lockPath).size < MAX_LOCK_BYTES);
+});
+
+test("a valid lock exactly at the byte limit is respected", (t) => {
+  const lockPath = setup(t);
+  const content = JSON.stringify({ pid: 1, owner: "foreign", ts: Date.now() });
+  fs.writeFileSync(lockPath, content.padEnd(MAX_LOCK_BYTES));
+  const { election, spy } = makeElection(t, lockPath);
+
+  election.start();
+
+  assert.equal(election.isLeader(), false);
+  assert.equal(spy.followed, 1);
+});
+
+test("a symlink lock is replaced without following or modifying its target", (t) => {
+  const lockPath = setup(t);
+  const target = path.join(path.dirname(lockPath), "target");
+  const content = JSON.stringify({ pid: 1, owner: "foreign", ts: Date.now() });
+  fs.writeFileSync(target, content);
+  fs.symlinkSync(target, lockPath);
+  const { election } = makeElection(t, lockPath);
+
+  election.start();
+
+  assert.equal(election.isLeader(), true, "a fresh-looking symlink target is never trusted");
+  assert.equal(fs.lstatSync(lockPath).isSymbolicLink(), false);
+  assert.equal(fs.readFileSync(target, "utf8"), content);
+});
+
+test("a FIFO lock is replaced without waiting for a writer", (t) => {
+  const lockPath = setup(t);
+  execFileSync("/usr/bin/mkfifo", [lockPath]);
+  const { election } = makeElection(t, lockPath);
+
+  election.start();
+
+  assert.equal(election.isLeader(), true);
+  assert.equal(fs.lstatSync(lockPath).isFile(), true);
+});
+
+for (const replacement of ["oversized", "symlink", "fifo"] as const) {
+  test(`a leader demotes when its lock becomes ${replacement}, without writing through it`, (t) => {
+    const lockPath = setup(t);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 20, followerCheckMs: 10_000 });
+    election.start();
+    const original = fs.readFileSync(lockPath, "utf8");
+    const target = path.join(path.dirname(lockPath), "target");
+    if (replacement === "oversized") {
+      fs.appendFileSync(lockPath, " ".repeat(MAX_LOCK_BYTES));
+    } else {
+      fs.unlinkSync(lockPath);
+      if (replacement === "symlink") {
+        // Even a target carrying our exact owner must never be refreshed through a symlink.
+        fs.writeFileSync(target, original);
+        fs.symlinkSync(target, lockPath);
+      } else {
+        execFileSync("/usr/bin/mkfifo", [lockPath]);
+      }
+    }
+    const read = t.mock.method(fs, "readSync");
+    const write = t.mock.method(fs, "writeSync");
+    t.mock.timers.tick(20);
+
+    assert.equal(election.isLeader(), false);
+    assert.equal(spy.released, 1);
+    assert.equal(read.mock.callCount(), 0);
+    assert.equal(write.mock.callCount(), 0);
+    if (replacement === "symlink") assert.equal(fs.readFileSync(target, "utf8"), original);
+    if (replacement === "oversized") assert.ok(fs.statSync(lockPath).size > MAX_LOCK_BYTES);
+    if (replacement === "fifo") assert.equal(fs.lstatSync(lockPath).isFIFO(), true);
+  });
+}
+
+test("release does not follow a replacement symlink, even with the same owner", (t) => {
+  const lockPath = setup(t);
+  const { election } = makeElection(t, lockPath);
+  election.start();
+  const target = path.join(path.dirname(lockPath), "target");
+  const content = fs.readFileSync(lockPath, "utf8");
+  fs.writeFileSync(target, content);
+  fs.unlinkSync(lockPath);
+  fs.symlinkSync(target, lockPath);
+
+  election.stop();
+
+  assert.equal(fs.existsSync(lockPath), false, "a rejected symlink must not be restored as a hard link");
+  assert.equal(fs.readFileSync(target, "utf8"), content);
 });
 
 test("a leader whose lock was overwritten by another process demotes", async (t) => {
@@ -569,7 +672,7 @@ function writeStaleLock(lockPath: string): void {
 }
 
 /** Makes one fs function fail with the given errno, as a persistent fault would. */
-function failWith(name: "renameSync" | "readFileSync", code: string, onlyFor?: string): void {
+function failWith(name: "renameSync" | "readSync", code: string, onlyFor?: string): void {
   const real = fs[name] as (...args: unknown[]) => unknown;
   mock.method(fs, name, (...args: unknown[]) => {
     if (onlyFor === undefined || String(args[0]) === onlyFor) {
@@ -606,7 +709,7 @@ test("a lock we cannot read is reported as unknown rather than taken over", asyn
   t.after(() => mock.restoreAll());
   // Unparsable *content* is stealable, but a read that fails leaves us unable to tell whether
   // a live window owns the lock - taking it over there is how two leaders happen.
-  failWith("readFileSync", "EACCES", lockPath);
+  failWith("readSync", "EACCES");
 
   const { election, spy } = makeElection(t, lockPath, { heartbeatMs: 1000, followerCheckMs: 10 });
   election.start();

@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createSource, parseStateFields, type Source } from "../src/sources.js";
+import { MAX_LOG_LINES_PER_POLL, createSource, parseStateFields, truncate, type Source } from "../src/sources.js";
+import { resetLogSink, setLogSink } from "../src/log.js";
+
+function captureWarnings(t: { after(fn: () => void): void }): string[] {
+  const warnings: string[] = [];
+  setLogSink((level, message) => {
+    if (level === "warn") warnings.push(message);
+  });
+  t.after(() => resetLogSink());
+  return warnings;
+}
 
 function tmpDir(t: { after(fn: () => void): void }): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-sources-"));
@@ -260,6 +271,79 @@ test("log-lines: ignores blank lines", (t) => {
   source.poll(file);
   fs.appendFileSync(file, "\n\nreal\n\n");
   assert.deepEqual(lines(source, file), ["real"]);
+});
+
+for (const extra of [0, 1, 100_000]) {
+  test(`log-lines: keeps the newest bounded batch with ${extra} excess lines`, (t) => {
+    const warnings = captureWarnings(t);
+    const file = path.join(tmpDir(t), "app.log");
+    const source = createSource({ type: "log-lines", windowBytes: 1024 * 1024 });
+    fs.writeFileSync(file, "");
+    source.poll(file);
+    const batch = Array.from({ length: MAX_LOG_LINES_PER_POLL + extra }, (_, i) => String(i));
+    fs.appendFileSync(file, batch.join("\n") + "\npartial");
+
+    assert.deepEqual(lines(source, file), batch.slice(-MAX_LOG_LINES_PER_POLL));
+    assert.equal(warnings.filter((w) => w.includes("log line cap")).length, extra > 0 ? 1 : 0);
+    assert.deepEqual(lines(source, file), [], "skipped lines are not replayed on the next poll");
+    fs.appendFileSync(file, " completed\n");
+    assert.deepEqual(lines(source, file), ["partial completed"]);
+  });
+}
+
+for (const repeated of ["a\n", "\n", "\r\n"]) {
+  test(`log-lines: tiny repeated ${JSON.stringify(repeated)} lines cannot bypass the work cap`, (t) => {
+    const warnings = captureWarnings(t);
+    const file = path.join(tmpDir(t), "app.log");
+    const source = createSource({ type: "log-lines", windowBytes: 1024 * 1024 });
+    fs.writeFileSync(file, "");
+    source.poll(file);
+    fs.appendFileSync(file, repeated.repeat(500_000));
+    const hashing = t.mock.method(crypto, "createHash");
+
+    const events = source.poll(file);
+    const expected = repeated === "a\n" ? MAX_LOG_LINES_PER_POLL : 0;
+    assert.equal(events.length, expected);
+    assert.equal(hashing.mock.callCount(), expected, "hashing work is bounded before deduplication");
+    assert.equal(warnings.filter((w) => w.includes("log line cap")).length, 1);
+    // Rewriting the processed tail must still deduplicate against the previous batch.
+    fs.writeFileSync(file, repeated.repeat(MAX_LOG_LINES_PER_POLL));
+    assert.deepEqual(source.poll(file), []);
+  });
+}
+
+test("log-lines: byte and line caps together preserve complete UTF-8/CRLF lines and warn", (t) => {
+  const warnings = captureWarnings(t);
+  const file = path.join(tmpDir(t), "app.log");
+  const source = createSource({ type: "log-lines", windowBytes: 32 * 1024 });
+  fs.writeFileSync(file, "");
+  source.poll(file);
+  const batch = Array.from({ length: 10_000 }, (_, i) => `完了${i}`);
+  fs.appendFileSync(file, batch.join("\r\n") + "\r\n");
+
+  assert.deepEqual(lines(source, file), batch.slice(-MAX_LOG_LINES_PER_POLL));
+  assert.equal(warnings.filter((w) => w.includes("log window")).length, 1);
+  assert.equal(warnings.filter((w) => w.includes("log line cap")).length, 1);
+});
+
+test("log-lines: byte overflow warns even before a complete line exists", (t) => {
+  const warnings = captureWarnings(t);
+  const file = path.join(tmpDir(t), "app.log");
+  const source = createSource({ type: "log-lines", windowBytes: 4096 });
+  fs.writeFileSync(file, "");
+  source.poll(file);
+  fs.appendFileSync(file, "a".repeat(8192));
+
+  assert.deepEqual(source.poll(file), []);
+  assert.equal(warnings.filter((w) => w.includes("skipped 4096 bytes")).length, 1);
+});
+
+test("truncate: handles a huge line without splitting Unicode code points", () => {
+  assert.equal(truncate("🎐".repeat(1_000_000), 1000), "🎐".repeat(1000));
+  assert.equal(truncate("a🎐b", 2), "a🎐");
+  assert.equal(truncate("a🎐b", 3), "a🎐b");
+  assert.equal(truncate("a", 0), "");
+  assert.equal(truncate("", 1000), "");
 });
 
 // --- file-meta ----------------------------------------------------------
