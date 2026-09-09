@@ -36,7 +36,7 @@ jobs:
           # Tell an unzip failure apart from grep finding nothing. Piping them directly would
           # let the check pass even when unzip fails (pipefail does not apply inside an if).
           listing=$(unzip -l chirin.vsix)
-          if grep -E "extension/(src|test|dist/test|tmp|\.tmp|CLAUDE-SECURITY-[^/]+)/|/\.claude-security-run/" <<< "$listing"; then
+          if grep -E "extension/(src|test|dist/test|tmp|\.tmp)/" <<< "$listing"; then
             echo "::error::the .vsix contains sources, tests or scratch files"
             exit 1
           fi

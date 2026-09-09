@@ -13,6 +13,10 @@ tmp/
 !.claude/CLAUDE.md
 !.claude/skills/
 
+# claude-security plugin scan artifacts, written to the repository root
+CLAUDE-SECURITY-*/
+.claude-security-run/
+
 # Host/container-local secrets and personal settings (guarding against an accidental commit)
 .devcontainer/
 
