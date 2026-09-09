@@ -134,18 +134,34 @@ export function loadConfig(configPath: string): Config {
 }
 
 /**
- * Returns the raw config text, or undefined if it cannot be read.
+ * The outcome of reading the config for change detection.
  *
- * This is used solely to decide whether the content changed since last time; it performs
- * neither permission checks nor JSON parsing (that is loadConfig's job). Comparing content
- * rather than mtime matters because rebuilding the Watcher on a save that changed nothing
- * would reset the source baselines and drop events that arrive in that gap.
+ * `rejected` and `unreadable` both mean "no text", but they do not age the same way. A
+ * rejection is a verdict on the file itself and stays true until the file changes, while an
+ * unreadable file is the transient case (deleted, or caught mid-rename) that the next poll
+ * picks up. Collapsing the two would leave a permanent rejection waiting for a change that
+ * never comes, with nothing reported in the meantime.
  */
-export function readConfigText(configPath: string): string | undefined {
+export type ConfigRead =
+  | { kind: "text"; text: string }
+  | { kind: "rejected"; error: ConfigError }
+  | { kind: "unreadable" };
+
+/**
+ * Reads the config as it is used to decide whether the content changed since last time.
+ *
+ * It performs neither permission checks nor JSON parsing (that is loadConfig's job).
+ * Comparing content rather than mtime matters because rebuilding the Watcher on a save that
+ * changed nothing would reset the source baselines and drop events that arrive in that gap.
+ */
+export function readConfigText(configPath: string): ConfigRead {
   try {
-    return readConfigFile(configPath, false);
-  } catch {
-    return undefined;
+    return { kind: "text", text: readConfigFile(configPath, false) };
+  } catch (err) {
+    // Only a ConfigError is a verdict on the file (over the byte cap, or not a regular file).
+    // An I/O failure is transient by nature and must not be reported as a rejection.
+    if (err instanceof ConfigError) return { kind: "rejected", error: err };
+    return { kind: "unreadable" };
   }
 }
 

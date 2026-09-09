@@ -37,6 +37,12 @@ function makeTmpDir(t: { after(fn: () => void): void }): string {
   return dir;
 }
 
+/** The text of a successful read: most change-detection tests care about content, not kind. */
+function configTextOf(configPath: string): string | undefined {
+  const read = readConfigText(configPath);
+  return read.kind === "text" ? read.text : undefined;
+}
+
 function writeConfigFile(dir: string, content: string, mode: number): string {
   const file = path.join(dir, "config.json");
   fs.writeFileSync(file, content);
@@ -403,7 +409,9 @@ test("config reads: reject oversized files before allocating or reading their co
   fs.truncateSync(file, 1024 * 1024 * 1024); // sparse fixture
   const read = t.mock.method(fs, "readSync");
   assert.throws(() => loadConfig(file), /config exceeds/);
-  assert.equal(readConfigText(file), undefined, "change detection must be bounded too");
+  const bounded = readConfigText(file);
+  assert.ok(bounded.kind === "rejected", "change detection must be bounded too");
+  assert.match(bounded.error.message, /config exceeds/);
   assert.equal(read.mock.callCount(), 0);
 });
 
@@ -411,10 +419,10 @@ test("config reads: accept valid JSON exactly at the byte limit", (t) => {
   const raw = JSON.stringify(baseConfig()).padEnd(MAX_CONFIG_BYTES);
   const file = writeConfigFile(makeTmpDir(t), raw, 0o600);
   assert.equal(loadConfig(file).rules.length, 1);
-  assert.equal(readConfigText(file), raw);
+  assert.equal(configTextOf(file), raw);
   fs.appendFileSync(file, " ");
   assert.throws(() => loadConfig(file), /config exceeds/);
-  assert.equal(readConfigText(file), undefined);
+  assert.equal(readConfigText(file).kind, "rejected");
 });
 
 test("readConfigText: refuses symlinks and FIFOs during change detection", (t) => {
@@ -422,10 +430,12 @@ test("readConfigText: refuses symlinks and FIFOs during change detection", (t) =
   const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o600);
   const link = path.join(dir, "link.json");
   fs.symlinkSync(file, link);
-  assert.equal(readConfigText(link), undefined);
+  // O_NOFOLLOW fails the open itself, so the symlink never reaches the "is it a regular
+  // file?" verdict: it is an I/O failure, which is the conservative classification.
+  assert.equal(readConfigText(link).kind, "unreadable");
   const fifo = path.join(dir, "fifo.json");
   execFileSync("/usr/bin/mkfifo", [fifo]);
-  assert.equal(readConfigText(fifo), undefined);
+  assert.equal(readConfigText(fifo).kind, "rejected");
 });
 
 test("loadConfig: rejects a group-writable file (0620)", (t) => {
@@ -493,15 +503,15 @@ test("loadConfig: invalid JSON raises ConfigError", (t) => {
 test("readConfigText: returns the content verbatim", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, JSON.stringify(baseConfig()), 0o600);
-  assert.equal(readConfigText(file), JSON.stringify(baseConfig()));
+  assert.equal(configTextOf(file), JSON.stringify(baseConfig()));
 });
 
 test("readConfigText: a changed content yields a different value", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, "{ \"a\": 1 }", 0o600);
-  const before = readConfigText(file);
+  const before = configTextOf(file);
   fs.writeFileSync(file, "{ \"a\": 2 }");
-  assert.notEqual(readConfigText(file), before);
+  assert.notEqual(configTextOf(file), before);
 });
 
 // Validation is loadConfig's job. If change detection did not treat broken content as
@@ -509,22 +519,22 @@ test("readConfigText: a changed content yields a different value", (t) => {
 test("readConfigText: returns the content without throwing even for broken JSON", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, "{ not json", 0o600);
-  assert.equal(readConfigText(file), "{ not json");
+  assert.equal(configTextOf(file), "{ not json");
 });
 
 // loadConfig rejects permission violations. Throwing here would stop the watch loop.
 test("readConfigText: does not throw for a group-writable file", (t) => {
   const dir = makeTmpDir(t);
   const file = writeConfigFile(dir, "{}", 0o666);
-  assert.equal(readConfigText(file), "{}");
+  assert.equal(configTextOf(file), "{}");
   assert.throws(() => loadConfig(file), /writable by group\/other/);
 });
 
-test("readConfigText: returns undefined when it cannot be read", () => {
-  assert.equal(readConfigText("/no/such/config.json"), undefined);
+test("readConfigText: a missing file is transient, not a rejection", () => {
+  assert.equal(readConfigText("/no/such/config.json").kind, "unreadable");
 });
 
-test("readConfigText: returns undefined for a directory", (t) => {
+test("readConfigText: a directory is rejected, not merely unreadable", (t) => {
   const dir = makeTmpDir(t);
-  assert.equal(readConfigText(dir), undefined);
+  assert.equal(readConfigText(dir).kind, "rejected");
 });
