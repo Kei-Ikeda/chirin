@@ -10,7 +10,7 @@ import { log } from "./log.js";
 // | Type       | Change detection          | Limit           | On overflow          |
 // |------------|---------------------------|-----------------|----------------------|
 // | json-state | ts field                  | 64KB            | reject (treated as anomalous) |
-// | log-lines  | hash of already-seen lines| window size     | read only the tail window |
+// | log-lines  | hash of already-seen lines| bytes + line cap| read only the newest bounded batch |
 // | file-meta  | mtime + size              | - (not read)    | -                    |
 
 /** A single candidate event. Every value in fields is untrusted (sanitized before notifying). */
@@ -168,13 +168,15 @@ export function parseStateFields(raw: string): Record<string, string> | null {
 export const DEFAULT_LOG_WINDOW_BYTES = 1024 * 1024;
 export const MIN_LOG_WINDOW_BYTES = 4 * 1024;
 export const MAX_LOG_WINDOW_BYTES = 16 * 1024 * 1024;
+/** Per file and poll, including blank and duplicate lines. Also bounds events and retained hashes. */
+export const MAX_LOG_LINES_PER_POLL = 2000;
 const MAX_LINE_LEN = 1000;
 const NEWLINE = 0x0a;
 
 interface LogState {
   /** Byte offset just past the last complete line already processed */
   offset: number;
-  /** Hashes of the complete lines contained in the most recent read window */
+  /** Hashes of the most recent processed batch; at most MAX_LOG_LINES_PER_POLL entries */
   seen: Set<string>;
 }
 
@@ -208,7 +210,7 @@ class LogLinesSource implements Source {
 
     // The size shrank = truncation / rotation. Re-read from the beginning.
     // seen is not cleared (this prevents a duplicate notification if the same content is rewritten).
-    let offset = size < prev.offset ? 0 : prev.offset;
+    const offset = size < prev.offset ? 0 : prev.offset;
 
     let readFrom = offset;
     let startsMidLine = false;
@@ -222,23 +224,33 @@ class LogLinesSource implements Source {
     }
 
     const buf = readRange(fd, readFrom, size - readFrom);
-    const lastNewline = buf.lastIndexOf(NEWLINE);
-    if (lastNewline < 0) {
-      // No complete line yet. Advance the offset only and wait for the next poll (partial-line handling).
-      return { next: { offset: readFrom, seen: prev.seen }, events: [] };
-    }
-    // Decode only the range covering complete lines. This naturally excludes a trailing
-    // partial line as well as a byte sequence cut in the middle of a multi-byte character.
-    const text = buf.subarray(0, lastNewline).toString("utf8");
-    const lines = text.split("\n");
-    // After jumping to the window, the first entry starts mid-line, so drop it
-    if (startsMidLine) lines.shift();
-
     if (skipped > 0) {
       log.warn(
         `log window (${this.windowBytes} bytes) overflowed; skipped ${skipped} bytes without inspecting them: ${file}`,
       );
     }
+    const lastNewline = buf.lastIndexOf(NEWLINE);
+    if (lastNewline < 0) {
+      // No complete line yet. Advance the offset only and wait for the next poll (partial-line handling).
+      return { next: { offset: readFrom, seen: prev.seen }, events: [] };
+    }
+    // Bound the line count BEFORE decoding/splitting/hashing. A byte window alone can hold
+    // millions of tiny lines. Scan backwards to keep the newest complete lines, counting
+    // blanks and duplicates too so neither can bypass the work limit.
+    const firstComplete = startsMidLine ? buf.indexOf(NEWLINE) + 1 : 0;
+    let start = lastNewline + 1;
+    for (let count = 0; count < MAX_LOG_LINES_PER_POLL && start > firstComplete; count++) {
+      // Buffer.lastIndexOf treats negative offsets as relative to the end, not "not found".
+      start = start > 1 ? buf.lastIndexOf(NEWLINE, start - 2) + 1 : 0;
+      start = Math.max(start, firstComplete);
+    }
+    if (start > firstComplete) {
+      log.warn(
+        `log line cap (${MAX_LOG_LINES_PER_POLL}/poll) reached; skipped ${start - firstComplete} bytes of older complete lines without inspecting them: ${file}`,
+      );
+    }
+    // The byte boundary is now a newline, so a multi-byte character cannot be cut here.
+    const lines = start > lastNewline ? [] : buf.subarray(start, lastNewline).toString("utf8").split("\n");
 
     const seen = new Set<string>();
     const events: SourceEvent[] = [];
@@ -263,8 +275,7 @@ class LogLinesSource implements Source {
 
 function hashLine(line: string): string {
   // The container controls the content behind the dedup key, so use a cryptographic hash
-  // to keep a collision from suppressing a notification (measured at 0.19ms per 64KB, which
-  // is negligible even when polling every second).
+  // to keep a collision from suppressing a notification. The batch cap bounds hash calls.
   return crypto.createHash("sha256").update(line).digest("base64");
 }
 
@@ -334,6 +345,12 @@ export function defaultFieldFor(type: SourceConfig["type"]): string {
 
 /** Truncation by code point (never splits a surrogate pair). */
 export function truncate(value: string, maxLen: number): string {
-  const cps = [...value];
-  return cps.length > maxLen ? cps.slice(0, maxLen).join("") : value;
+  // Stop at the limit instead of allocating an array for an entire untrusted log line.
+  let end = 0;
+  let count = 0;
+  for (const cp of value) {
+    if (count++ >= maxLen) break;
+    end += cp.length;
+  }
+  return value.slice(0, end);
 }

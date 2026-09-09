@@ -6,6 +6,9 @@ dist/test/**
 .github/**
 .devcontainer/**
 .claude/**
+# Scan artifacts. Gitignored, but vsce packages untracked files too, so they need excluding here.
+CLAUDE-SECURITY-*/**
+**/.claude-security-run/**
 .vscode/**
 tmp/**
 .tmp/**

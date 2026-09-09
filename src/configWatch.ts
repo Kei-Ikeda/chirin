@@ -6,7 +6,7 @@
 // in the gap), while revisiting too rarely strands the extension in "Config error" after the
 // user has already fixed the problem.
 
-import { loadConfig, readConfigText, type Config } from "./config.js";
+import { loadConfig, readConfigText, type Config, type ConfigRead } from "./config.js";
 import { errorMessage } from "./log.js";
 
 /** The config is valid. `changed` separates an edit from the repair of an earlier rejection. */
@@ -45,7 +45,7 @@ export class ConfigTracker {
   private lastError: string | undefined;
 
   constructor(
-    private readonly read: (configPath: string) => string | undefined = readConfigText,
+    private readonly read: (configPath: string) => ConfigRead = readConfigText,
     private readonly load: (configPath: string) => Config = loadConfig,
   ) {}
 
@@ -55,18 +55,25 @@ export class ConfigTracker {
    * distinguishable from "the config is broken".
    */
   loadNow(configPath: string): ConfigAccepted | ConfigRejected {
-    this.text = this.read(configPath);
+    const read = this.read(configPath);
+    this.text = read.kind === "text" ? read.text : undefined;
     return this.evaluate(configPath, true);
   }
 
   /** Decides what a config poll should do with the file. */
   check(configPath: string): ConfigStatus {
-    const text = this.read(configPath);
+    const read = this.read(configPath);
+    const text = read.kind === "text" ? read.text : undefined;
     const changed = text !== this.text;
-    // Unchanged *and* accepted is the only case where nothing needs looking at
-    if (!changed && this.accepted) return { kind: "unchanged" };
+    // Unchanged *and* accepted is the only case where nothing needs looking at. A rejection is
+    // a verdict rather than a value, so it can never be "unchanged": a poll that saw the file
+    // missing leaves no text behind, and the swap that follows would compare equal to it.
+    if (read.kind !== "rejected" && !changed && this.accepted) return { kind: "unchanged" };
     this.text = text;
-    if (text === undefined) return { kind: "unreadable" };
+    // Only a transient failure may be waited out. A rejection of the file itself does not
+    // move again on its own, so it has to be evaluated and reported: treating it as
+    // unreadable would settle into "unchanged" on the next poll and stay silent for good.
+    if (read.kind === "unreadable") return { kind: "unreadable" };
     return this.evaluate(configPath, changed);
   }
 

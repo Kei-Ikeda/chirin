@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { readRange } from "./fileread.js";
 import { errorMessage, log } from "./log.js";
 
 /** How often a follower checks whether the lock is free. */
@@ -26,6 +27,8 @@ const FUTURE_TS_TOLERANCE_MS = 30_000;
  * determined.
  */
 const TICK_FAILURE_LIMIT = 3;
+/** Serialized locks are under 128 bytes; leave room for compatible additions without unbounded reads. */
+export const MAX_LOCK_BYTES = 4096;
 
 interface LockData {
   pid: number;
@@ -152,8 +155,16 @@ export class LeaderElection {
   private renewOrDemote(): void {
     let fd: number;
     try {
-      fd = fs.openSync(this.lockPath, "r+");
+      fd = fs.openSync(
+        this.lockPath,
+        fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
     } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+        log.warn("lost leadership: the watcher lock is a symlink");
+        this.demote();
+        return;
+      }
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       // The lock is gone (a cleanup tool, say). Always recreate through the atomic publish,
       // and demote gracefully if another window has already published one.
@@ -167,7 +178,7 @@ export class LeaderElection {
       // via rename would also clobber the new lock of a window that stole it (rename + wx)
       // between our read and write, producing two leaders. With an fd, we keep pointing at
       // the displaced old file after a steal, so the write never reaches the new lock.
-      const current = this.parseLock(fs.readFileSync(fd, "utf8"));
+      const current = this.readLockFd(fd);
       if (current === null || current.owner !== this.owner) {
         // Do not overwrite an unreadable, corrupted lock either (never clobber a window mid-steal)
         log.warn("lost leadership: the watcher lock was taken by another window");
@@ -380,6 +391,9 @@ export class LeaderElection {
       }
       if (owner !== this.owner) {
         try {
+          // On macOS link() follows a source symlink. Restoring it would turn the rejected
+          // link into a regular hard link to its target; discard only the symlink instead.
+          if (fs.lstatSync(moved).isSymbolicLink()) return;
           fs.linkSync(moved, this.lockPath);
         } catch {
           // A failed restore is left to self-healing (the owner demotes, then someone is promoted again)
@@ -405,22 +419,38 @@ export class LeaderElection {
   }
 
   /**
-   * Reads a lock file. Absent or unparsable content is null (= stealable); a read that fails
-   * for any other reason throws.
+   * Reads a lock file. Absent, non-regular, symlinked, oversized or unparsable content is null
+   * (= stealable); a read that fails for any other reason throws.
    *
    * Swallowing a permission or I/O error here would turn a persistent fault into "the lock is
    * corrupted", and the steal that follows would fail in the same way - reported as an
    * ordinary lost race. The failure has to stay visible so the tick counter can report it.
    */
   private readLockAt(p: string): LockData | null {
-    let raw: string;
+    let fd: number;
     try {
-      raw = fs.readFileSync(p, "utf8");
+      fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ELOOP") return null;
       throw err;
     }
-    return this.parseLock(raw);
+    try {
+      return this.readLockFd(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /** Validate the opened inode, including on renewal, and never read beyond the lock budget. */
+  private readLockFd(fd: number): LockData | null {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return null;
+    if (st.size > MAX_LOCK_BYTES) {
+      log.warn(`watcher lock exceeds ${MAX_LOCK_BYTES} bytes; treating it as corrupted`);
+      return null;
+    }
+    return this.parseLock(readRange(fd, 0, st.size).toString("utf8"));
   }
 
   private parseLock(raw: string): LockData | null {
