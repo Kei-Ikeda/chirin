@@ -6,6 +6,8 @@ dist/test/**
 .github/**
 .devcontainer/**
 .claude/**
+CLAUDE-SECURITY-*/**
+**/.claude-security-run/**
 .vscode/**
 tmp/**
 .tmp/**

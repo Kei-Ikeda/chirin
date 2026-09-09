@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readRange } from "./fileread.js";
 import { validateGlobPattern } from "./glob.js";
 import { stripJsonComments } from "./jsonc.js";
 import { errorMessage } from "./log.js";
@@ -70,6 +71,7 @@ const SOURCE_TYPES: readonly string[] = ["json-state", "log-lines", "file-meta"]
 // Default used when a rule omits notify.title. Shows the tool name
 // (rules for Claude Code set "Claude Code" explicitly in the config template).
 const DEFAULT_TITLE = "chirin";
+export const MAX_CONFIG_BYTES = 1024 * 1024;
 
 // Cap on the length of a match target. A runtime limit that curbs ReDoS backtracking blowup,
 // shared with the truncation on the watcher side (referenced here as a cap as well, so a
@@ -113,8 +115,11 @@ export function loadConfig(configPath: string): Config {
   checkConfigFile(configPath);
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, "utf8");
+    raw = readConfigFile(configPath, true);
   } catch (err) {
+    // readConfigFile already reports the exact reason (not a regular file, over the byte cap,
+    // wrong owner or mode); re-wrapping it would repeat the path twice in one message.
+    if (err instanceof ConfigError) throw err;
     throw new ConfigError(`cannot read config ${configPath}: ${errorMessage(err)}`);
   }
   let data: unknown;
@@ -129,23 +134,84 @@ export function loadConfig(configPath: string): Config {
 }
 
 /**
- * Returns the raw config text, or undefined if it cannot be read.
+ * The outcome of reading the config for change detection.
  *
- * This is used solely to decide whether the content changed since last time; it performs
- * neither permission checks nor JSON parsing (that is loadConfig's job). Comparing content
- * rather than mtime matters because rebuilding the Watcher on a save that changed nothing
- * would reset the source baselines and drop events that arrive in that gap.
+ * `rejected` and `unreadable` both mean "no text", but they do not age the same way. A
+ * rejection is a verdict on the file itself and stays true until the file changes, while an
+ * unreadable file is the transient case (deleted, or caught mid-rename) that the next poll
+ * picks up. Collapsing the two would leave a permanent rejection waiting for a change that
+ * never comes, with nothing reported in the meantime.
  */
-export function readConfigText(configPath: string): string | undefined {
+export type ConfigRead =
+  | { kind: "text"; text: string }
+  | { kind: "rejected"; error: ConfigError }
+  | { kind: "unreadable" };
+
+/**
+ * Reads the config as it is used to decide whether the content changed since last time.
+ *
+ * It performs neither permission checks nor JSON parsing (that is loadConfig's job).
+ * Comparing content rather than mtime matters because rebuilding the Watcher on a save that
+ * changed nothing would reset the source baselines and drop events that arrive in that gap.
+ */
+export function readConfigText(configPath: string): ConfigRead {
   try {
-    return fs.readFileSync(configPath, "utf8");
-  } catch {
-    return undefined;
+    return { kind: "text", text: readConfigFile(configPath, false) };
+  } catch (err) {
+    // Only a ConfigError is a verdict on the file (over the byte cap, or not a regular file).
+    // An I/O failure is transient by nature and must not be reported as a rejection.
+    if (err instanceof ConfigError) return { kind: "rejected", error: err };
+    // The exception is O_NOFOLLOW's ELOOP: it says the leaf is a symlink and nothing else, so
+    // the open fails before fstat can pass the same verdict it passes on a directory or a
+    // FIFO. Left transient, the swap a container is most likely to attempt would be the one
+    // condition of the three that never reaches the log.
+    if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+      return {
+        kind: "rejected",
+        error: new ConfigError(`config must be a regular file (not a symlink): ${configPath}`),
+      };
+    }
+    return { kind: "unreadable" };
   }
 }
 
+/** Both loading and change detection need bounded reads, including after a rejected config. */
+function readConfigFile(configPath: string, checkPermissions: boolean): string {
+  const fd = fs.openSync(
+    configPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+  );
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new ConfigError(`config must be a regular file: ${configPath}`);
+    if (st.size > MAX_CONFIG_BYTES) {
+      throw new ConfigError(`config exceeds ${MAX_CONFIG_BYTES} bytes: ${configPath}`);
+    }
+    if (checkPermissions) checkConfigOwnerAndMode(configPath, st);
+    return readRange(fd, 0, st.size).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function checkConfigOwnerAndMode(configPath: string, st: fs.Stats): void {
+  if (!isTrustedOwner(st.uid)) {
+    throw new ConfigError(`config must be owned by the current user or root: ${configPath}`);
+  }
+  if ((st.mode & 0o022) !== 0) {
+    throw new ConfigError(
+      `config must not be writable by group/other: ${configPath} (fix with: chmod 600 ${configPath})`,
+    );
+  }
+}
+
+/** Root-owned config supports MDM provisioning. Windows has no POSIX uid API. */
+function isTrustedOwner(uid: number): boolean {
+  return typeof process.getuid !== "function" || uid === process.getuid() || uid === 0;
+}
+
 // The config is assumed to live somewhere the container cannot tamper with (outside the
-// workspace). Require a regular file (no symlinks) that is not group/other writable.
+// workspace). Require a regular file (no symlinks) owned by this user or root and not group/other writable.
 // The parent directory must not be group/other writable either: even a hardened file can be
 // swapped wholesale when its directory is writable.
 function checkConfigFile(configPath: string): void {
@@ -160,17 +226,16 @@ function checkConfigFile(configPath: string): void {
   if (!st.isFile()) {
     throw new ConfigError(`config must be a regular file (not a symlink or directory): ${configPath}`);
   }
-  if ((st.mode & 0o022) !== 0) {
-    throw new ConfigError(
-      `config must not be writable by group/other: ${configPath} (fix with: chmod 600 ${configPath})`,
-    );
-  }
+  checkConfigOwnerAndMode(configPath, st);
   const dir = path.dirname(configPath);
   let dst: fs.Stats;
   try {
     dst = fs.statSync(dir); // follow symlinks so the real directory's permissions are checked
   } catch (err) {
     throw new ConfigError(`cannot stat config directory ${dir}: ${errorMessage(err)}`);
+  }
+  if (!isTrustedOwner(dst.uid)) {
+    throw new ConfigError(`config directory must be owned by the current user or root: ${dir}`);
   }
   if ((dst.mode & 0o022) !== 0) {
     throw new ConfigError(

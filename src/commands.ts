@@ -142,7 +142,7 @@ export function runValidate(configPath: string): Config {
 /**
  * Warns when the config sits inside a local workspace folder.
  *
- * A workspace can be bind-mounted into the container, so a config inside it is writable from
+ * A workspace can be bind-mounted into the container, so a config inside it may be writable from
  * the container even after passing the permission checks (not group/other writable). That
  * breaks the assumption that the config lives somewhere the container cannot tamper with
  * so it is surfaced both at startup and when the config is validated.
@@ -152,6 +152,15 @@ export function runValidate(configPath: string): Config {
  * config, so only local (file scheme) folders are checked.
  */
 export function warnIfConfigInsideWorkspace(configPath: string): void {
+  // Matches warnIfProbablyNotWatched: an unmappable remote path is a limitation of the check,
+  // not a detected misconfiguration, so it must not read as a warning on the normal
+  // devcontainer path. The condition mirrors the skip in the loop below.
+  if ((vscode.workspace.workspaceFolders ?? []).some((folder) => folder.uri.scheme !== "file")) {
+    log.debug(
+      `cannot map remote workspace paths to the host to check config placement; ` +
+        `ensure the config and its lock directory are not writable from the container: ${configPath}`,
+    );
+  }
   // This is a string comparison, so a path opened through a symlink or with different
   // casing (macOS defaults to a case-insensitive FS) would slip through. Resolve to the real
   // path before comparing.
@@ -161,12 +170,12 @@ export function warnIfConfigInsideWorkspace(configPath: string): void {
     if (!isInside(realpathOrSelf(folder.uri.fsPath), resolvedConfig)) continue;
     log.warn(
       `the config is inside the workspace ${folder.uri.fsPath}. ` +
-        `A config inside the workspace is writable from the container, ` +
-        `so move it outside the workspace, e.g. to ~/.config/chirin/: ${configPath}`,
+        `If this folder is mounted into a container, the config and watcher lock may be writable from it. ` +
+        `Keep them outside container-writable mounts, e.g. in ~/.config/chirin/: ${configPath}`,
     );
     void vscode.window.showWarningMessage(
-      "chirin: the config is inside the workspace. It is writable from the container, " +
-        "so move it outside the workspace, e.g. to ~/.config/chirin/.",
+      "chirin: the config is inside the workspace and may be writable from a container if mounted. " +
+        "Keep it outside container-writable mounts, e.g. in ~/.config/chirin/.",
     );
     return;
   }

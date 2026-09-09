@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { MAX_CONFIG_BYTES } from "../src/config.js";
 import { ConfigTracker } from "../src/configWatch.js";
 
 // Change detection for the config file, driven against real files and real permissions:
@@ -136,4 +137,34 @@ test("a missing config still reaches the loader, so 'not configured' stays disti
     /config not found/,
     "loadNow must not swallow a missing config into 'unreadable'",
   );
+});
+
+// A config over the byte cap is not the transient case "unreadable" stands for: the bytes stay
+// where they are until someone edits the file. Reported as unreadable it would settle into
+// "unchanged" on the very next poll and never be surfaced again.
+test("a config that grows past the byte cap keeps being reported", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  fs.writeFileSync(f.configPath, VALID_CONFIG.padEnd(MAX_CONFIG_BYTES + 1));
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+  // Nothing moved in between, so a second poll must not fall back to "unchanged"
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+
+  fs.writeFileSync(f.configPath, VALID_CONFIG);
+  assert.equal(f.tracker.check(f.configPath).kind, "accepted", "shrinking below the cap recovers");
+});
+
+// Replacing the config with a symlink is the swap the container side is most likely to try.
+// The bounded read refuses to follow it, but refusing and saying nothing are different things.
+test("a config replaced by a symlink is reported, not waited out", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  const elsewhere = path.join(f.dir, "elsewhere.json");
+  fs.writeFileSync(elsewhere, VALID_CONFIG, { mode: 0o600 });
+  fs.rmSync(f.configPath);
+  fs.symlinkSync(elsewhere, f.configPath);
+
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
 });

@@ -274,7 +274,12 @@ symlinked directory, or with different casing on a case-insensitive volume) reso
 ## Config reference
 
 `~/.config/chirin/config.json` (host side, outside the workspace). It is refused at startup if the
-file or its directory is group/other writable, or if the file is a symlink.
+file or its directory is group/other writable, or if the file is a symlink. On POSIX, both the
+file and its parent directory must be owned by the current user or root; uid checks are skipped
+where `process.getuid` is unavailable. Root-owned files are accepted for MDM provisioning,
+but the user running VS Code still needs permission to create the watcher lock beside the
+config (for example, a root-owned `0644` file in the user's own `0700` directory).
+Config reads, including auto-reload checks, are capped at 1MB and reject special files.
 
 The extension is `.json`, but **it is read as JSON with comments (JSONC)**. `//` and `/* */`
 are allowed, so unused settings can be left commented out (trailing commas are not supported).
@@ -373,7 +378,7 @@ back, so they arrive within the same poll cycle rather than synchronously with i
 | type | Change detection | Read limit | On overflow | Exposed fields |
 |---|---|---|---|---|
 | `json-state` | A change in the `ts` field | 64KB | **Reject** (anomalous for a state file) | `ts` / `event` / `notification_type` / `background_task_count` / `message` / `cwd` plus arbitrary fields from the JSON |
-| `log-lines` | Appended lines (already-notified lines excluded by hash) | `windowBytes` (default 1MB, 4KB–16MB) | **Read only the tail window** (warning states how much was skipped) | `line` |
+| `log-lines` | Appended lines (already-notified lines excluded by hash) | `windowBytes` (default 1MB, 4KB–16MB) and 2,000 complete lines per file per poll | **Process only the newest bounded batch** (warning states what was skipped) | `line` |
 | `file-meta` | `mtime` + `size` | Content is never read | — | `size` / `mtime` |
 
 #### Filtering out background-agent notifications
@@ -477,12 +482,13 @@ they are **collapsed into a single notification** whose body carries the latest 
 - **Event coalescing**: with `json-state`, when several events occur within one poll interval only the latest is notified (a consequence of the single state file and last-write-wins)
 - **"Run a command on match" will never be supported**: a permanent non-goal, not a gap waiting for a pull request (the reason is in the principles at the top of this README)
 - **At most one literal directory in an untrusted level**: the symlink check covers only the single level directly above the watched file. With `~/src/*/*/*/.claude/chirin-notify-state.json`, the container-writable level has one literal segment (`.claude`) and a swap is detected; with two or more, as in `~/src/*/logs/app/error.log`, replacing an upper directory (`logs`) with a symlink can make chirin read a different file on the host (only up to each field's character limit reaches the notification, but it is still an information disclosure path). When watching a container-writable area, use a pattern with no deep literal hierarchy
-- **Keep the config outside the workspace**: if the config or lock file lives inside the workspace (i.e. somewhere that can be bind-mounted into the container), it is writable from the container even after passing the permission checks. If you move it away from the default `~/.config/chirin/`, keep it outside the workspace too (a config inside one warns at startup and on `chirin: Validate config`)
+- **Keep the config and lock outside container-writable mounts**: owner/mode checks do not protect a file from a container that can write it through a mount. A config inside a local workspace warns at startup and on `chirin: Validate config`, but continues watching: opening a dotfiles folder locally does not establish that it is mounted into a container. This is advice based on the current window's folders, not proof of isolation. Remote workspace paths cannot be mapped to host paths, and that limitation is logged. Check mount settings yourself when moving the config away from `~/.config/chirin/`. A container-writable lock directory lets an attacker keep a forged lock fresh and suppress notifications across all windows
+- **Notification text is not authenticated**: any process able to write a watched file can supply text under a configured title such as "Claude Code". Sanitization and length limits do not prove that Claude Code produced it. Verify requests in the originating tool before acting on a notification, especially requests to run commands or provide secrets
 - **The in-window toast appears in the leader window**: notifications are fired by the Watcher in the window holding the lock, so the `chirin.showInEditorToast` toast appears there (not in whichever other window has focus). Anything missed is covered by the OS notification, which always appears
 
 ### `log-lines` specifics
 
-- **Loss handling is best-effort**: if more than `windowBytes` is written within a single poll interval, the excess is not read. The 1MB default corresponds to roughly 11,000 lines per second, so it is normally out of reach — and **when a skip does happen, a warn log states "skipped N bytes"** (never dropped silently). Raise `windowBytes` for high log volume
+- **Loss handling is best-effort**: each file/poll reads at most `windowBytes` and processes at most the newest 2,000 complete lines in that window. Older complete lines are skipped, while the final partial line waits for completion. A warn log reports byte-window overflow or line-cap overflow and the bytes skipped. Blank and duplicate lines count toward the line cap too. Raising `windowBytes` allows longer lines but does not raise the line cap; `{{count}}` reflects only the matches in the processed batch
 - **Repeats are suppressed against the previous batch**: a line identical (by hash) to one in the most recently read batch of lines is not notified again, so a message repeated on every poll does not ring on every poll. Within one batch, identical lines collapse into a single notification whose `{{count}}` carries how many there were. A line that reappears after a batch without it notifies again
 - **Tracking starts from what is appended after watching begins**: content already in the file when watching starts is not notified (this keeps old log lines from notifying every time a window is reopened)
 - **Log rotation**: when the size shrinks, reading restarts from the beginning. A rotation first observed with the new file already larger than the old one cannot be detected
@@ -524,9 +530,12 @@ comments next to the code instead, so it cannot drift out of sync.
 | AppleScript / shell injection through the notification body | osascript with a fixed script plus argv. Building commands by string concatenation is banned outright |
 | Link injection into the in-window toast (phishing) | The VS Code notification API renders `[label](url)` in the body as a clickable link. `](` is broken right before display so it never forms link syntax |
 | Control characters and escape sequences | Sanitization (removing U+0000–U+001F, U+007F and the rest) plus length limits |
-| Memory exhaustion through a huge file | stat before reading, then reject or read only the tail according to the per-source-type limit |
+| Memory exhaustion through a huge file | fstat after opening, then reject or read only the tail according to the per-source-type limit; config loading and change detection also have a 1MB read cap |
+| CPU/memory exhaustion through many tiny log lines | Select at most the newest 2,000 complete lines per file/poll before decoding, splitting or hashing; this also caps candidate events and retained deduplication hashes at 2,000. Line truncation stops at the character limit without allocating an array for the entire line |
+| Huge or symlinked watcher lock | Reads during acquisition, renewal and release require a regular file, reject symlinks/FIFOs and cap reads at 4KB; corrupt locks remain recoverable through the election protocol |
 | Malicious input to a user-defined regex (ReDoS) | The match target is capped at 200 characters. The pattern length is capped at 256, and nested unbounded quantifiers are rejected at load. Matching itself runs in a worker thread, which is terminated once it exceeds its budget, so a pattern that gets past the load-time check cannot stall the extension host |
-| Config tampering | Kept outside the workspace. Refused at startup if the file or its directory is group/other writable, or if the file is a symlink. Warned about if it sits inside the workspace |
+| Config tampering / forged locks suppressing notifications | Keep the config and lock directory outside container-writable mounts. Refuse config files or parent directories that are group/other writable or, on POSIX, owned by neither the current user nor root; refuse symlink config files. Workspace placement warnings are advisory and cannot establish isolation, especially in remote windows |
+| Spoofed notification content / social engineering | Watched files are untrusted and their producer is not authenticated. An attacker can supply text under a trusted configured title. Sanitization, length limits and broken link syntax limit rendering, but users must verify requests in the originating tool |
 | Notification flooding | A throttle per rule x file (default 5000ms) plus at most 5 notifications per poll cycle |
 
 Every limit and validation in the code is tied to this model. Do not remove one because it
