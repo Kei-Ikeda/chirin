@@ -152,8 +152,11 @@ export function runValidate(configPath: string): Config {
  * config, so only local (file scheme) folders are checked.
  */
 export function warnIfConfigInsideWorkspace(configPath: string): void {
+  // Matches warnIfProbablyNotWatched: an unmappable remote path is a limitation of the check,
+  // not a detected misconfiguration, so it must not read as a warning on the normal
+  // devcontainer path. The condition mirrors the skip in the loop below.
   if ((vscode.workspace.workspaceFolders ?? []).some((folder) => folder.uri.scheme !== "file")) {
-    log.warn(
+    log.debug(
       `cannot map remote workspace paths to the host to check config placement; ` +
         `ensure the config and its lock directory are not writable from the container: ${configPath}`,
     );

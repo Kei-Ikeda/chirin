@@ -117,6 +117,9 @@ export function loadConfig(configPath: string): Config {
   try {
     raw = readConfigFile(configPath, true);
   } catch (err) {
+    // readConfigFile already reports the exact reason (not a regular file, over the byte cap,
+    // wrong owner or mode); re-wrapping it would repeat the path twice in one message.
+    if (err instanceof ConfigError) throw err;
     throw new ConfigError(`cannot read config ${configPath}: ${errorMessage(err)}`);
   }
   let data: unknown;
