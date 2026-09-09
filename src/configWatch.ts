@@ -65,8 +65,10 @@ export class ConfigTracker {
     const read = this.read(configPath);
     const text = read.kind === "text" ? read.text : undefined;
     const changed = text !== this.text;
-    // Unchanged *and* accepted is the only case where nothing needs looking at
-    if (!changed && this.accepted) return { kind: "unchanged" };
+    // Unchanged *and* accepted is the only case where nothing needs looking at. A rejection is
+    // a verdict rather than a value, so it can never be "unchanged": a poll that saw the file
+    // missing leaves no text behind, and the swap that follows would compare equal to it.
+    if (read.kind !== "rejected" && !changed && this.accepted) return { kind: "unchanged" };
     this.text = text;
     // Only a transient failure may be waited out. A rejection of the file itself does not
     // move again on its own, so it has to be evaluated and reported: treating it as
