@@ -154,3 +154,17 @@ test("a config that grows past the byte cap keeps being reported", (t) => {
   fs.writeFileSync(f.configPath, VALID_CONFIG);
   assert.equal(f.tracker.check(f.configPath).kind, "accepted", "shrinking below the cap recovers");
 });
+
+// Replacing the config with a symlink is the swap the container side is most likely to try.
+// The bounded read refuses to follow it, but refusing and saying nothing are different things.
+test("a config replaced by a symlink is reported, not waited out", (t) => {
+  const f = setup(t);
+  assert.equal(f.tracker.loadNow(f.configPath).kind, "accepted");
+
+  const elsewhere = path.join(f.dir, "elsewhere.json");
+  fs.writeFileSync(elsewhere, VALID_CONFIG, { mode: 0o600 });
+  fs.rmSync(f.configPath);
+  fs.symlinkSync(elsewhere, f.configPath);
+
+  assert.equal(f.tracker.check(f.configPath).kind, "rejected");
+});

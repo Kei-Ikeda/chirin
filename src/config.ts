@@ -161,6 +161,16 @@ export function readConfigText(configPath: string): ConfigRead {
     // Only a ConfigError is a verdict on the file (over the byte cap, or not a regular file).
     // An I/O failure is transient by nature and must not be reported as a rejection.
     if (err instanceof ConfigError) return { kind: "rejected", error: err };
+    // The exception is O_NOFOLLOW's ELOOP: it says the leaf is a symlink and nothing else, so
+    // the open fails before fstat can pass the same verdict it passes on a directory or a
+    // FIFO. Left transient, the swap a container is most likely to attempt would be the one
+    // condition of the three that never reaches the log.
+    if ((err as NodeJS.ErrnoException).code === "ELOOP") {
+      return {
+        kind: "rejected",
+        error: new ConfigError(`config must be a regular file (not a symlink): ${configPath}`),
+      };
+    }
     return { kind: "unreadable" };
   }
 }

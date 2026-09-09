@@ -431,8 +431,9 @@ test("readConfigText: refuses symlinks and FIFOs during change detection", (t) =
   const link = path.join(dir, "link.json");
   fs.symlinkSync(file, link);
   // O_NOFOLLOW fails the open itself, so the symlink never reaches the "is it a regular
-  // file?" verdict: it is an I/O failure, which is the conservative classification.
-  assert.equal(readConfigText(link).kind, "unreadable");
+  // file?" verdict. ELOOP carries that verdict on its own, and the swap has to be reported
+  // like the directory and the FIFO below rather than waited out as a transient failure.
+  assert.equal(readConfigText(link).kind, "rejected");
   const fifo = path.join(dir, "fifo.json");
   execFileSync("/usr/bin/mkfifo", [fifo]);
   assert.equal(readConfigText(fifo).kind, "rejected");
