@@ -177,6 +177,17 @@ function checkConfigFile(configPath: string): void {
       `config directory must not be writable by group/other: ${dir} (fix with: chmod 700 ${dir})`,
     );
   }
+  // The leader lock is created next to the config (defaultLockPath), so a directory this
+  // process cannot write leaves every window failing to elect a leader. Rejecting it here
+  // turns a silent stall into a reason: the config itself loads fine, and the only other
+  // signal is a stalled election three heartbeats later.
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+  } catch {
+    throw new ConfigError(
+      `config directory must be writable by the current user (it holds the watcher lock): ${dir}`,
+    );
+  }
 }
 
 export function validateConfig(data: unknown): Config {
