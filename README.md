@@ -109,8 +109,8 @@ also **follows an application's log file** and **reports updates to any file** (
 This is a **UI extension** (`"extensionKind": ["ui"]`), so even with a devcontainer open the
 extension host lives on the host macOS side and can call `osascript` and read the host's real
 paths directly. The container is treated as untrusted: everything in the state file is
-validated and sanitized before it reaches a notification. The reasoning is in
-[Design notes](#design-notes).
+validated and sanitized before it reaches a notification. Every defense that follows from
+that premise is listed in the [threat model](#threat-model).
 
 ## Setup in detail
 
@@ -147,7 +147,7 @@ shows the details. **A state name appears only when you have something to do** �
 |---|---|---|
 | `chirin` | Watching is running (healthy). The hover says whether it is **this window or another one** | Show log |
 | `chirin: Electing` | Leader election has not settled yet (normally becomes `chirin` in an instant) | Show log |
-| `chirin: Unknown` | Lock operations keep failing and **whether any window is watching cannot be determined**. Notifications may have stopped | Show log |
+| `chirin: Unknown` | A permission or I/O error keeps failing the lock operations, so **whether any window is watching cannot be determined**. Notifications may have stopped. A merely stale lock is not this state: that one is taken over automatically | Show log |
 | `chirin: Disabled` | `chirin.enabled` is false | **Resume watching** |
 | `chirin: Not configured` | No config yet (the normal state on a first run) | Open setup |
 | `chirin: Config error` | The config could not be read | Open config file |
@@ -204,7 +204,7 @@ living side by side get a lock each, while equivalent paths to the same config (
 symlinked directory, or with different casing on a case-insensitive volume) resolve to one.
 
 - Closing the leader's window releases the lock immediately and another window takes over
-- If the leader is force-quit, another window notices the missing heartbeats and takes over within roughly 10 seconds, regardless of how `pollIntervalMs` is set
+- If the leader is force-quit, the timestamp inside its lock stops being refreshed and goes stale, another window steals the lock, and the handover completes within roughly 10 seconds regardless of how `pollIntervalMs` is set. A lock left behind by a crash is never a deadlock
 - `chirin.configPath` is `scope: application`, so it is shared by every window in the profile: a single lock, and exactly one watching window among those opened in the same profile
 - The lock was named `watcher.lock` up to 1.0.2. After upgrading from those versions, restart every window — an older build contends for the old name and would watch in parallel. A leftover `watcher.lock` is inert
 
@@ -476,10 +476,10 @@ dependencies, no execution — and the notes below explain why each absence is d
 
 | Vector | Defense |
 |---|---|
-| AppleScript / shell injection through the notification body | osascript with a fixed script plus argv. Building commands by string concatenation is banned outright |
+| AppleScript / shell injection through the notification body | `execFile` on an absolute `/usr/bin/osascript`, so no shell is involved at all. The script body is a constant and the data travels only in argv, behind a `--` that ends osascript's own option parsing — without it a message beginning with `-` could be read back as another `-e`. Building commands by string concatenation is banned outright |
 | Link injection into the in-window toast (phishing) | The VS Code notification API renders `[label](url)` in the body as a clickable link. `](` is broken right before display so it never forms link syntax |
 | Control characters and escape sequences | Sanitization (removing U+0000–U+001F, U+007F and the rest) plus length limits |
-| Memory exhaustion through a huge file | fstat after opening, then reject or read only the tail according to the per-source-type limit; config loading and change detection also have a 1MB read cap |
+| Memory exhaustion through a huge file | fstat after opening, then reject or read only the tail according to the per-source-type limit. A `log-lines` poll reads just the bytes appended past the offset it recorded last, never the whole file; config loading and change detection also have a 1MB read cap |
 | CPU/memory exhaustion through many tiny log lines | Select at most the newest 2,000 complete lines per file/poll before decoding, splitting or hashing; this also caps candidate events and retained deduplication hashes at 2,000. Line truncation stops at the character limit without allocating an array for the entire line |
 | Huge or symlinked watcher lock | Reads during acquisition, renewal and release require a regular file, reject symlinks/FIFOs and cap reads at 4KB; corrupt locks remain recoverable through the election protocol |
 | Malicious input to a user-defined regex (ReDoS) | The match target is capped at 200 characters and the pattern length at 256, and nested unbounded quantifiers are rejected at load. That check is only a heuristic — `(a\|aa)+$` gets past it — so matching itself runs in a worker thread that is terminated once it exceeds its budget. Terminating the worker is the only thing that can stop a runaway match; no check on the evaluating thread can interrupt one |
