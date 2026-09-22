@@ -10,6 +10,16 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # These two are pinned on purpose, not left behind, and the first Dependabot run
+      # offered to raise both. @types/vscode has to equal the lower bound of
+      # engines.vscode, which is what makes an API missing from the minimum VS Code a type
+      # error; it moves only when that lower bound deliberately moves. @types/node tracks
+      # the extension host's Node at that same lower bound, so 22.x is welcome and a major
+      # is not.
+      - dependency-name: "@types/vscode"
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # This is what keeps the SHA pins in the workflows from going stale. Pinning an action by
   # commit SHA stops it from being repointed at other code, at the cost of freezing it;
