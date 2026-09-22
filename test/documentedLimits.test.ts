@@ -65,6 +65,13 @@ const documented = [
     stated: 1000,
     spelling: "within 1 second",
   },
+  {
+    name: "MAX_CONFIG_BYTES (threat model)",
+    anchor: "Memory exhaustion through a huge file",
+    actual: MAX_CONFIG_BYTES,
+    stated: 1024 * 1024,
+    spelling: "1MB read cap",
+  },
   { name: "MAX_LOCK_BYTES", anchor: "Huge or symlinked watcher lock", actual: MAX_LOCK_BYTES, stated: 4096, spelling: "cap reads at 4KB" },
   { name: "TITLE_MAX_LEN", anchor: "`rules[].notify.title`", actual: TITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
   { name: "SUBTITLE_MAX_LEN", anchor: "`rules[].notify.subtitle`", actual: SUBTITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
@@ -103,6 +110,13 @@ const documented = [
     actual: MAX_LOG_LINES_PER_POLL,
     stated: 2000,
     spelling: "2,000 complete lines",
+  },
+  {
+    name: "MAX_LOG_LINES_PER_POLL (threat model)",
+    anchor: "CPU/memory exhaustion through many tiny log lines",
+    actual: MAX_LOG_LINES_PER_POLL,
+    stated: 2000,
+    spelling: "newest 2,000 complete lines per file/poll",
   },
 ] as const;
 
@@ -294,17 +308,41 @@ test("a json-state file at the documented 64KB is read, and one byte past it is 
   assert.equal(pastSource.poll(pastEdge).length, 0, "one byte past the documented size must be rejected");
 });
 
-test("the README still states the two limits behind notification flooding", () => {
-  // Neither is exported, and both are already pinned by behaviour at the documented value:
-  // watcher.test.ts writes seven states and asserts five notifications (so a cap of four or
-  // six fails there), and config.test.ts reads 5000 back off a rule that omits throttleMs.
-  // Being fixed at the value is what leaves the prose free to move alone.
-  const row = fs
-    .readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8")
-    .split("\n")
-    .filter((line) => line.includes("| Notification flooding |"));
-  assert.equal(row.length, 1, "the README row stating the flooding limits is no longer findable");
-  for (const spelling of ["default 5000ms", "at most 5 notifications per poll cycle"]) {
-    assert.ok(row[0]!.includes(spelling), `the README no longer says "${spelling}": ${row[0]}`);
+/**
+ * The documented values the table above cannot carry, because they are not exported. Both are
+ * pinned by behaviour at the value the README states -- watcher.test.ts writes seven states
+ * and asserts five notifications, so a cap of four or six fails there, and config.test.ts
+ * reads 5000 back off a rule that omits throttleMs. Being fixed at the value is exactly what
+ * leaves the prose free to name a different one.
+ */
+const proseOnly = [
+  {
+    name: "notifications per poll cycle",
+    anchor: "| Notification flooding |",
+    spelling: "at most 5 notifications per poll cycle",
+  },
+  {
+    name: "defaults.throttleMs (threat model)",
+    anchor: "| Notification flooding |",
+    spelling: "default 5000ms",
+  },
+  {
+    name: "defaults.throttleMs (grouping note)",
+    anchor: "No notification grouping",
+    spelling: "The default throttle (5 seconds)",
+  },
+] as const;
+
+test("the README still states each documented value no constant here can reach", () => {
+  const lines = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8").split("\n");
+  const wrong: string[] = [];
+  for (const { name, anchor, spelling } of proseOnly) {
+    const matched = lines.filter((line) => line.includes(anchor));
+    if (matched.length !== 1) {
+      wrong.push(`${name}: "${anchor}" matches ${matched.length} README lines, expected 1`);
+    } else if (!matched[0]!.includes(spelling)) {
+      wrong.push(`${name}: the README line at "${anchor}" no longer says "${spelling}"`);
+    }
   }
+  assert.deepEqual(wrong, [], wrong.join("\n"));
 });
