@@ -31,7 +31,7 @@
     "macos"
   ],
   "devDependencies": {
-    "@types/node": "^22",
+    "@types/node": "^26",
     "@types/vscode": "1.101.0",
     "@vscode/vsce": "^4.0.0",
     "typescript": "^7.0.2"
