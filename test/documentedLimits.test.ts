@@ -5,10 +5,12 @@
 // it, so widening the lock cap left the build green and the README wrong. A test that reads
 // the constant is a test that follows it anywhere it goes.
 //
-// Two documented limits are missing from this list because they are not exported, and a test
-// is not a reason to widen a module's surface: the 64KB json-state cap, and the 256-character
+// Some documented limits are missing from this list because they are not exported, and a test
+// is not a reason to widen a module's surface: the 64KB json-state cap, the 256-character
 // pattern length (which config.test.ts does pin against widening, by rejecting a 257-character
-// pattern).
+// pattern), and the cap of five notifications per poll cycle. Those are pinned by behaviour
+// instead -- below for the first two, and in watcher.test.ts for the cap -- and their README
+// wording is checked next to whichever test pins them.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -19,6 +21,7 @@ import { ConfigError, MAX_CONFIG_BYTES, MAX_MATCH_TARGET_LEN, validateConfig } f
 import { createSource } from "../src/sources.js";
 import { MAX_LOCK_BYTES } from "../src/leader.js";
 import { MESSAGE_MAX_LEN, SOUND_PATTERN, SUBTITLE_MAX_LEN, TITLE_MAX_LEN } from "../src/notifier.js";
+import { REGEX_TIMEOUT_MS } from "../src/regexMatcher.js";
 import {
   DEFAULT_LOG_WINDOW_BYTES,
   MAX_LOG_LINES_PER_POLL,
@@ -52,6 +55,15 @@ const documented = [
     actual: MAX_MATCH_TARGET_LEN,
     stated: 200,
     spelling: "first 200",
+  },
+  {
+    // regexMatcher.test.ts asserts this value, but nothing reads the sentence that promises
+    // it, so the prose is free to name a different budget on its own.
+    name: "REGEX_TIMEOUT_MS",
+    anchor: "a rule whose match does not come back",
+    actual: REGEX_TIMEOUT_MS,
+    stated: 1000,
+    spelling: "within 1 second",
   },
   { name: "MAX_LOCK_BYTES", anchor: "Huge or symlinked watcher lock", actual: MAX_LOCK_BYTES, stated: 4096, spelling: "cap reads at 4KB" },
   { name: "TITLE_MAX_LEN", anchor: "`rules[].notify.title`", actual: TITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
@@ -280,4 +292,19 @@ test("a json-state file at the documented 64KB is read, and one byte past it is 
   pastSource.poll(pastEdge);
   write(pastEdge, "2-b", documented + 1);
   assert.equal(pastSource.poll(pastEdge).length, 0, "one byte past the documented size must be rejected");
+});
+
+test("the README still states the two limits behind notification flooding", () => {
+  // Neither is exported, and both are already pinned by behaviour at the documented value:
+  // watcher.test.ts writes seven states and asserts five notifications (so a cap of four or
+  // six fails there), and config.test.ts reads 5000 back off a rule that omits throttleMs.
+  // Being fixed at the value is what leaves the prose free to move alone.
+  const row = fs
+    .readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes("| Notification flooding |"));
+  assert.equal(row.length, 1, "the README row stating the flooding limits is no longer findable");
+  for (const spelling of ["default 5000ms", "at most 5 notifications per poll cycle"]) {
+    assert.ok(row[0]!.includes(spelling), `the README no longer says "${spelling}": ${row[0]}`);
+  }
 });
