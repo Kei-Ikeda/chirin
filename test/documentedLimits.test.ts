@@ -12,9 +12,11 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { ConfigError, MAX_CONFIG_BYTES, MAX_MATCH_TARGET_LEN, validateConfig } from "../src/config.js";
+import { createSource } from "../src/sources.js";
 import { MAX_LOCK_BYTES } from "../src/leader.js";
 import { MESSAGE_MAX_LEN, SOUND_PATTERN, SUBTITLE_MAX_LEN, TITLE_MAX_LEN } from "../src/notifier.js";
 import {
@@ -157,4 +159,90 @@ test("the README still states each documented lower bound on its own line", () =
     }
   }
   assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/**
+ * The edges the README documents inside a pattern rather than as a range. They are not
+ * exported, and were left to review twice on that basis -- but "not exported" only rules out
+ * naming the constant, not asking the validation where its edge is.
+ *
+ * Rejecting one character past a limit, which is what config.test.ts does, leaves the limit
+ * free to shrink: at 255 a documented 256-character pattern starts being refused and that
+ * rejection test stays green.
+ */
+const patternEdges = [
+  {
+    field: "match.pattern",
+    anchor: "Regular expression (`pattern` <= 256 characters)",
+    longest: 256,
+    build: (length: number) => ({ type: "regex", field: "event", pattern: "p".repeat(length) }),
+  },
+  {
+    field: "rules[].id",
+    anchor: "| `rules[].id` |",
+    longest: 64,
+    build: () => ({ type: "event", equals: "Stop" }),
+  },
+] as const;
+
+test("every documented pattern edge is accepted and the character past it is not", () => {
+  for (const { field, longest, build } of patternEdges) {
+    const at = (length: number): Record<string, unknown> => {
+      const rule: Record<string, unknown> = {
+        // `rules[].id` is documented as /^[a-z0-9][a-z0-9-]{0,63}$/, so its edge is a 64-character id
+        id: field === "rules[].id" ? `a${"b".repeat(length - 1)}` : "rule-1",
+        watch: ["/work/*/.claude/chirin-notify-state.json"],
+        match: build(length),
+        notify: { title: "T", message: "M" },
+      };
+      return { rules: [rule] };
+    };
+    assert.doesNotThrow(
+      () => validateConfig(at(longest)),
+      `${field} rejects ${longest} characters, which the README documents as valid`,
+    );
+    assert.throws(
+      () => validateConfig(at(longest + 1)),
+      ConfigError,
+      `${field} accepts ${longest + 1} characters, past the documented limit`,
+    );
+  }
+});
+
+test("the README still states each documented pattern edge on its own line", () => {
+  const lines = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8").split("\n");
+  const wrong = patternEdges
+    .filter(({ anchor }) => lines.filter((line) => line.includes(anchor)).length !== 1)
+    .map(({ field, anchor }) => `${field}: "${anchor}" no longer names exactly one README line`);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("a json-state file at the documented 64KB is read, and one byte past it is not", (t) => {
+  // The source rejects an oversized state file, and sources.test.ts proves that with a file of
+  // roughly 70KB -- which leaves the edge free to move. At 60KB a state file the README calls
+  // readable is dropped, silently, with that test still green.
+  const documented = 64 * 1024;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-limits-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  /** A valid state file of exactly `size` bytes, padded to length. */
+  const write = (file: string, ts: string, size: number): void => {
+    const withoutPad = JSON.stringify({ ts, event: "Stop", pad: "" });
+    fs.writeFileSync(file, JSON.stringify({ ts, event: "Stop", pad: "x".repeat(size - withoutPad.length) }));
+    assert.equal(fs.statSync(file).size, size, "the fixture has to sit exactly on the edge");
+  };
+
+  const atEdge = path.join(dir, "edge.json");
+  const edgeSource = createSource({ type: "json-state" });
+  write(atEdge, "1-a", 1024);
+  edgeSource.poll(atEdge);
+  write(atEdge, "2-b", documented);
+  assert.equal(edgeSource.poll(atEdge).length, 1, `a ${documented}-byte state file is documented as read`);
+
+  const pastEdge = path.join(dir, "past.json");
+  const pastSource = createSource({ type: "json-state" });
+  write(pastEdge, "1-a", 1024);
+  pastSource.poll(pastEdge);
+  write(pastEdge, "2-b", documented + 1);
+  assert.equal(pastSource.poll(pastEdge).length, 0, "one byte past the documented size must be rejected");
 });

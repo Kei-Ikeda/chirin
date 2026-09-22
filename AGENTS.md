@@ -129,12 +129,13 @@ configuration lost, or an install broken on a supported VS Code.
     command means changing the migration handling that recognises the old one.
 
 13. **A limit the README documents.** `test/documentedLimits.test.ts` ties the ones it lists
-    to the prose that states them, and a change to one is still worth reading against what
-    the README claims, because that list has been short of the truth every time anyone
-    counted it. Two habits caused that: rejecting a value far outside a range, which does not
-    pin the range, and comparing part of a value, which does not pin the value -- a pattern's
-    source without its flags, for instance. Where a limit is not exported, assert the
-    behaviour at the documented edge rather than widening a module's surface for a test.
+    to the prose that states them, so a change to one is worth reading against what the
+    README claims -- that list has been short of the truth every time anyone counted it.
+    Three habits caused that, and each is worth recognising in a new test rather than
+    repeating: rejecting a value far outside a range does not pin the range, comparing part
+    of a value does not pin the value (a pattern's source without its flags), and a limit
+    being unexported rules out naming the constant, not asking the validation where its edge
+    is. Assert the documented edge and the step past it.
 
 14. **A user-facing string contributed through a field nothing enumerates.**
     `test/localization.test.ts` requires every field it walks to hold a `%key%`, and requires
