@@ -33,13 +33,20 @@ test("both nls bundles declare the same keys", () => {
   );
 });
 
-test("every key package.json references exists in both bundles", () => {
+test("every key package.json references carries text in both bundles", () => {
+  // `key in bundle` is not enough: a translation cleared to "" keeps the key, satisfies every
+  // other check here, and renders as a blank label.
+  const problem = (bundle: Record<string, string>, file: string, key: string): string[] => {
+    if (!(key in bundle)) return [`${file} is missing ${key}`];
+    return typeof bundle[key] === "string" && bundle[key]!.trim() !== ""
+      ? []
+      : [`${file} has ${key} but it is empty`];
+  };
   const missing = [...referenced]
     .flatMap((key) => [
-      key in english ? [] : [`package.nls.json is missing ${key}`],
-      key in japanese ? [] : [`package.nls.ja.json is missing ${key}`],
+      ...problem(english, "package.nls.json", key),
+      ...problem(japanese, "package.nls.ja.json", key),
     ])
-    .flat()
     .sort();
   assert.deepEqual(missing, [], missing.join("\n"));
 });
@@ -133,15 +140,24 @@ const mediaKeys = [
   ),
 ];
 
-test("every walkthrough panel exists in both languages", () => {
+test("every walkthrough panel is a file, in both languages", () => {
   assert.ok(mediaKeys.length > 0, "no walkthrough media keys found; this test stopped covering anything");
+  // Existing is not enough: a value pointing at `media/walkthrough/` resolves to a directory,
+  // which satisfies existsSync and leaves VS Code with no panel to render.
+  const isFile = (panel: string): boolean => {
+    try {
+      return fs.statSync(path.join(repoRoot, panel)).isFile();
+    } catch {
+      return false;
+    }
+  };
   const missing = mediaKeys
     .flatMap((key) => [
       [key, "package.nls.json", english[key]!],
       [key, "package.nls.ja.json", japanese[key]!],
     ])
-    .filter(([, , panel]) => !fs.existsSync(path.join(repoRoot, panel!)))
-    .map(([key, bundle, panel]) => `${key} in ${bundle} points at a missing ${panel}`);
+    .filter(([, , panel]) => !isFile(panel!))
+    .map(([key, bundle, panel]) => `${key} in ${bundle} does not point at a file: ${panel}`);
   assert.deepEqual(missing, [], missing.join("\n"));
 });
 
@@ -170,10 +186,12 @@ test("every contributed user-facing string is a localization reference", () => {
 });
 
 test("the enumerated fields cover every localization reference in the manifest", () => {
-  // Without this, the test above only covers the fields someone thought to list, and a new
-  // kind of contributed string would be unlocalized with nothing failing. Comparing the
-  // enumeration against every %key% the manifest mentions is what makes it complete: a
-  // reference the enumeration cannot reach fails here and says to extend it.
+  // This closes one direction only, and the other one cannot be closed from here. A field the
+  // enumeration does not walk still passes if its value is inline English, because it adds
+  // nothing to either set -- and knowing every field VS Code would localize means knowing the
+  // manifest schema, which lives outside this repository and moves with the editor. So a
+  // newly contributed field is a review matter, and AGENTS.md says so. What this does catch is
+  // a reference reaching a field the enumeration cannot see, which says to extend the list.
   const enumerated = new Set(
     contributedStrings
       .filter(({ value }) => /^%[^%]+%$/.test(value))

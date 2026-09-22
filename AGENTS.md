@@ -30,51 +30,35 @@ starts to drift.
 Real notification delivery is outside the automated tests. After touching the notification
 path, verify by hand with the `chirin: Send test notification` command.
 
-## What already fails on its own
+## What a red build already says
 
-Do not spend review attention here. These are enforced mechanically, so a violation is a red
-build rather than a review finding:
+Some of what is below is also enforced mechanically, and `npm test` and the steps in
+`.github/workflows/ci.yml` are the list of it -- read them rather than a copy kept here. A
+finding that a red build would have produced anyway is not worth reporting.
 
-| Invariant | What catches it |
-|---|---|
-| runtime `dependencies` stays empty | `npm run check:zero-deps` |
-| the `.js` extension on relative imports | `npm test`, in `test/sourceConventions.test.ts` |
-| the core never imports `vscode` | `npm test`, in `test/sourceConventions.test.ts` |
-| the `.vsix` carries only the distribution | the allowlist step in `ci.yml` |
-| a dependency with a known high advisory | `npm audit --audit-level=high` in `ci.yml` |
-| a VS Code API newer than `engines.vscode` | the pinned `@types/vscode`, as a type error |
-| a limit `test/documentedLimits.test.ts` lists drifting from the README | `npm test` |
-| the localization pairing, as far as `test/localization.test.ts` states it | `npm test` |
+Do not read that as a guarantee about any particular invariant. This section used to be a
+table naming which ones were mechanically enforced, and every round of review on it found the
+same defect: the claim was wider than the check behind it. Three of the eight rows were not
+enforced at all when first written. The rest were, but only as far as the test enumerated,
+which is never as far as a sentence describing a category. A file like this cannot state what
+is currently true without going stale on its own, and a "do not look here" that is wrong is
+worse than no claim at all -- so it states what matters instead, and leaves what is true to
+the tests.
 
-Neither of the first two is a compiler error, which is why they are tests: under a CommonJS
-NodeNext emit an extensionless relative import compiles, and a type-only `vscode` import is
-erased before anything can fail to resolve it. Weakening one of those tests is a change to
-the guarantee, not to a test.
+Two things are worth knowing about the checks that do exist, because neither is obvious:
 
-The two source-scanning tests read the sources with patterns rather than a parser, so what
-they catch is the shape that gets written by accident -- a forgotten extension, a type-only
-import, a file in a new subdirectory. A specifier hidden between tokens, say by a comment
-sitting between `require` and its parenthesis, goes unseen. That limit is deliberate and not
-worth closing: anyone who can write that can delete the test on the same commit, and what
-this repository defends against is the container's input, not its own history. Nothing a user
-relies on rests on these two -- the defenses that do are in the shipped code, and each is
-listed below.
+- The `.js` extension and the core's independence from `vscode` are tests rather than compiler
+  errors. Under a CommonJS NodeNext emit an extensionless relative import compiles, and a
+  type-only `vscode` import is erased before anything can fail to resolve it. Weakening one of
+  those tests is a change to a guarantee, not to a test
+- They read the sources with patterns, not a parser, so what they catch is the shape written
+  by accident. A specifier hidden between tokens, say by a comment between `require` and its
+  parenthesis, goes unseen. That is deliberate: anyone who can write it can delete the test in
+  the same commit, and what this repository defends against is the container's input, not its
+  own history
 
-The last two rows name a test rather than a category, and that is deliberate. Written as a
-category -- "every documented limit", "the localization pairing" -- the sentence is wider than
-any check behind it, which is how six rounds of review each found something the claim covered
-and the test did not. A row scoped to what its test enumerates cannot outrun it. Both tests
-assert their own coverage where that is possible: the localization one fails if the manifest
-gains a reference through a field it does not enumerate, which says to extend the list rather
-than leaving the gap silent.
-
-Two more things in that table are worth flagging when the change is to the check rather than
-to the code: loosening the `@types/vscode` pin to a range, and adding a bundler or any
-generated artifact that `check:zero-deps` does not see. Both trade a mechanical guarantee for
-a prose rule.
-
-If an invariant listed further down can be moved into this table, that is a better change than
-a stronger rule here.
+Nothing a user relies on rests on any of that. The defenses that do are in the shipped code,
+and each one is below.
 
 ## Review priorities
 
@@ -144,14 +128,22 @@ configuration lost, or an install broken on a supported VS Code.
     user-composed command or a copy at another path belongs to them. Changing the installed
     command means changing the migration handling that recognises the old one.
 
-13. **A limit the README documents that `test/documentedLimits.test.ts` does not list.**
-    That test names what it covers, and anything the README states outside its two tables is
-    covered by nothing: a change to such a limit is worth reading against what the README
-    claims. Do not read this as a short list. It was written as one twice, naming the limits
-    believed to be left over, and review found a further one both times -- an exported
-    pattern, then three documented lower bounds whose edges no test touched. Rejecting a
-    value far outside a range does not pin the range. Where a limit is not exported, assert
-    the behaviour at the documented edge rather than widening a module's surface for a test.
+13. **A limit the README documents.** `test/documentedLimits.test.ts` ties the ones it lists
+    to the prose that states them, and a change to one is still worth reading against what
+    the README claims, because that list has been short of the truth every time anyone
+    counted it. Two habits caused that: rejecting a value far outside a range, which does not
+    pin the range, and comparing part of a value, which does not pin the value -- a pattern's
+    source without its flags, for instance. Where a limit is not exported, assert the
+    behaviour at the documented edge rather than widening a module's surface for a test.
+
+14. **A user-facing string contributed through a field nothing enumerates.**
+    `test/localization.test.ts` requires every field it walks to hold a `%key%`, and requires
+    every `%key%` in the manifest to be reachable through one of those fields. Neither reaches
+    a new field whose value is inline English: it adds nothing to either side, so nothing
+    fails while a Japanese reader is handed English. Closing that would mean knowing every
+    field VS Code localizes, which is the editor's schema and not this repository's, so this
+    one stays here. A new contribution to `package.json` carrying text a person reads is worth
+    checking by eye, and worth adding to the enumeration.
 
 ## What not to report
 
@@ -163,3 +155,9 @@ this repository has already removed twice.
 
 When an invariant could reasonably be checked by a test or a CI step, propose that instead of
 a stronger rule in this file.
+
+The reverse is worth saying too, because it took eight rounds of review on this file to reach
+it: some invariants cannot be checks, and the honest move then is to say so here rather than
+to claim a check that does not exist or is narrower than the sentence describing it. A rule
+that states what matters keeps working. A rule that states what is currently true is a claim
+someone will verify, and it goes stale without anything failing.

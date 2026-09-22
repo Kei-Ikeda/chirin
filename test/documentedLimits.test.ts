@@ -61,8 +61,11 @@ const documented = [
     // narrowing it to 20 would keep that test green and start refusing documented names.
     name: "SOUND_PATTERN",
     anchor: "`rules[].notify.sound`",
-    actual: SOUND_PATTERN.source,
-    stated: "^[A-Za-z ]{1,30}$",
+    // The whole literal, flags included. Comparing only the source missed a flag being added:
+    // `m` leaves the source untouched and turns the anchors per-line, so "Pop\n!" starts
+    // passing validation while the README still documents a single-line name.
+    actual: String(SOUND_PATTERN),
+    stated: "/^[A-Za-z ]{1,30}$/",
     spelling: "`/^[A-Za-z ]{1,30}$/`",
   },
   {
