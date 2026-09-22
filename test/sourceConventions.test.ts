@@ -16,22 +16,33 @@ import test from "node:test";
 /** dist/test/<this file> -> the repository root */
 const repoRoot = path.join(__dirname, "..", "..");
 
-// Matches the specifier of the import and re-export forms this codebase uses (always
-// double-quoted, as the formatter writes them). Scanning raw text rather than parsing
-// means a specifier written inside a comment is matched too; a false positive fails
-// loudly, which is the safe direction for a check like this.
-const FROM_SPECIFIER = /\bfrom\s+"([^"]+)"/g;
+// Every module specifier has to be reachable, or the check is a check on the forms someone
+// happened to think of. Two patterns cover the static declarations:
+//   - a clause naming its source, which is every import and re-export that has one
+//   - a bare side-effect import, which has no such clause at all
+// Either quote style is accepted; the formatter writes one of them, and nothing enforces
+// that. Both are anchored to the start of a statement, which keeps a specifier mentioned in
+// a comment out (an earlier version matched its own documentation) and leaves out dynamic
+// `import()` and `require()`, neither of which appears in these sources.
+const WITH_SOURCE = /^[ \t]*(?:import|export)\b[^;'"]*\bfrom\s+["']([^"']+)["']/gm;
+const SIDE_EFFECT = /^[ \t]*import\s+["']([^"']+)["']/gm;
 
+/** Every .ts file under dir, at any depth: tsconfig includes the directory, not its top level. */
 function tsFiles(dir: string): string[] {
-  return fs
-    .readdirSync(path.join(repoRoot, dir))
-    .filter((name) => name.endsWith(".ts"))
-    .map((name) => path.join(dir, name));
+  const found: string[] = [];
+  for (const entry of fs.readdirSync(path.join(repoRoot, dir), { withFileTypes: true })) {
+    const relative = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...tsFiles(relative));
+    else if (entry.name.endsWith(".ts")) found.push(relative);
+  }
+  return found;
 }
 
 function specifiers(file: string): string[] {
   const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-  return [...source.matchAll(FROM_SPECIFIER)].map((match) => match[1]!);
+  return [WITH_SOURCE, SIDE_EFFECT].flatMap((pattern) =>
+    [...source.matchAll(pattern)].map((match) => match[1]!),
+  );
 }
 
 test("every relative import carries the .js extension", () => {

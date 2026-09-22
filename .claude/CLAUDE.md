@@ -31,8 +31,15 @@ Opening this repository in VS Code and pressing `F5` ("Run Extension" in `.vscod
 starts an extension development host. `CHIRIN_DEBUG=1` enables debug logging.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`), running a macos-latest / Node 22 and 24
-matrix on pushes to `main` and on pull requests. Reproduce it locally in the same order:
-`check:zero-deps` → `build` → `test` → `vsce package` → confirming the .vsix carries no sources.
+matrix on pushes to `main` and on pull requests. It installs with `--ignore-scripts`, and the
+final step matches the .vsix against an allowlist of the paths the distribution is allowed to
+carry. Reproduce it in the order that workflow lists rather than from a copy of the sequence:
+the copy that used to be here went stale within a day of `npm audit` joining it.
+
+Pull requests are also reviewed automatically by Codex, which reads `AGENTS.md` at the
+repository root. That file is the review checklist; it points here for the architecture rather
+than restating it, so the two are meant to be read together and a change to one is usually a
+change to both. A review can be re-requested by commenting `@codex review`.
 
 ## Architecture
 
