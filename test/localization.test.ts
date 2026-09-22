@@ -53,8 +53,10 @@ test("no bundle key is left behind by package.json", () => {
   assert.deepEqual(orphans, [], `nothing in package.json references:\n${orphans.join("\n")}`);
 });
 
+/** The walkthrough keys, which resolve to a file rather than to a string shown as-is. */
+const mediaKeys = Object.keys(english).filter((key) => key.endsWith(".media"));
+
 test("every walkthrough panel exists in both languages", () => {
-  const mediaKeys = Object.keys(english).filter((key) => key.endsWith(".media"));
   assert.ok(mediaKeys.length > 0, "no walkthrough media keys found; this test stopped covering anything");
   const missing = mediaKeys
     .flatMap((key) => [
@@ -64,4 +66,21 @@ test("every walkthrough panel exists in both languages", () => {
     .filter(([, , panel]) => !fs.existsSync(path.join(repoRoot, panel!)))
     .map(([key, bundle, panel]) => `${key} in ${bundle} points at a missing ${panel}`);
   assert.deepEqual(missing, [], missing.join("\n"));
+});
+
+test("each language resolves to its own walkthrough panel", () => {
+  // Existence alone does not hold the pairing: a Japanese value edited to the English path
+  // still resolves, still exists, and still leaves the key sets equal, so all of the above
+  // passes while a Japanese reader is shown the English panel. That is the quiet degradation
+  // these tests exist for, so the relationship itself is asserted -- the Japanese panel is
+  // the English one under the `ja/` directory, as it is laid out on disk.
+  const wrong = mediaKeys
+    .map((key) => ({
+      key,
+      expected: english[key]!.replace("walkthrough/", "walkthrough/ja/"),
+      actual: japanese[key]!,
+    }))
+    .filter(({ expected, actual }) => expected !== actual)
+    .map(({ key, expected, actual }) => `${key}: expected ${expected}, package.nls.ja.json says ${actual}`);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
 });
