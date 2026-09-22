@@ -19,12 +19,22 @@ jobs:
       matrix:
         node-version: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned by commit SHA: a tag can be repointed at other code, and CI runs
+      # with this repository's GITHUB_TOKEN. Dependabot keeps the pins current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Do not leave the GITHUB_TOKEN behind for later steps to find. Nothing here
+          # pushes, and `npm ci` below runs third-party package code.
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
+      # --ignore-scripts: no dependency gets to run code at install time. Only
+      # @vscode/vsce-sign carries an install script, and packaging does not need it.
+      - run: npm ci --ignore-scripts
+      # Fail on a known-vulnerable dependency rather than waiting for someone to run this by hand
+      - run: npm audit --audit-level=high
       # Mechanically guarantee zero dependencies (an empty `dependencies`)
       - run: npm run check:zero-deps
       - run: npm run build
