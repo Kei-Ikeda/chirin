@@ -16,16 +16,20 @@ import test from "node:test";
 /** dist/test/<this file> -> the repository root */
 const repoRoot = path.join(__dirname, "..", "..");
 
-// Every module specifier has to be reachable, or the check is a check on the forms someone
-// happened to think of. Two patterns cover the static declarations:
+// Every module specifier has to be reachable, or the check only covers the forms someone
+// happened to think of -- which is how two rounds of review each found a way past this.
+// Three patterns cover the static declarations:
 //   - a clause naming its source, which is every import and re-export that has one
 //   - a bare side-effect import, which has no such clause at all
-// Either quote style is accepted; the formatter writes one of them, and nothing enforces
-// that. Both are anchored to the start of a statement, which keeps a specifier mentioned in
-// a comment out (an earlier version matched its own documentation) and leaves out dynamic
-// `import()` and `require()`, neither of which appears in these sources.
+//   - an import-equals declaration, TypeScript's own form and valid in a CommonJS emit
+// Either quote style is accepted; the formatter writes one of them and nothing enforces that
+// it always will. All three are anchored to the start of a statement, which also keeps a
+// specifier written inside a comment out; an earlier version matched its own documentation.
+// The forms deliberately left out are not assumed absent: the last test here asserts it.
 const WITH_SOURCE = /^[ \t]*(?:import|export)\b[^;'"]*\bfrom\s+["']([^"']+)["']/gm;
 const SIDE_EFFECT = /^[ \t]*import\s+["']([^"']+)["']/gm;
+const IMPORT_EQUALS =
+  /^[ \t]*import\s+(?:type\s+)?[A-Za-z_$][\w$]*\s*=\s*require\s*\(\s*["']([^"']+)["']\s*\)/gm;
 
 /** Every .ts file under dir, at any depth: tsconfig includes the directory, not its top level. */
 function tsFiles(dir: string): string[] {
@@ -40,7 +44,7 @@ function tsFiles(dir: string): string[] {
 
 function specifiers(file: string): string[] {
   const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-  return [WITH_SOURCE, SIDE_EFFECT].flatMap((pattern) =>
+  return [WITH_SOURCE, SIDE_EFFECT, IMPORT_EQUALS].flatMap((pattern) =>
     [...source.matchAll(pattern)].map((match) => match[1]!),
   );
 }
@@ -77,5 +81,22 @@ test("only the VS Code boundary files import vscode", () => {
     offenders,
     [],
     `the core must stay testable without the extension host; a type-only import counts:\n${offenders.join("\n")}`,
+  );
+});
+
+test("no module is loaded by a form these patterns cannot read", () => {
+  // The scanner above is only as good as its list of forms, and review found a missing one
+  // twice. So the remaining ways to name a module are not declared out of scope, they are
+  // asserted absent: a dynamic import or a bare call-style load added later fails here,
+  // which says to widen the scanner before writing the import.
+  const loaderCall = /\b(?:require|import)\s*\(/;
+  const offenders = [...tsFiles("src"), ...tsFiles("test")].filter((file) => {
+    const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
+    return loaderCall.test(source.replace(IMPORT_EQUALS, ""));
+  });
+  assert.deepEqual(
+    offenders,
+    [],
+    `a module is named by a form the two convention tests above do not see:\n${offenders.join("\n")}`,
   );
 });
