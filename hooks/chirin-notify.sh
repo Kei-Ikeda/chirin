@@ -10,10 +10,11 @@ exec node -e "$(cat <<'CHIRIN_HOOK_JS'
 process.on("uncaughtException", () => process.exit(0));
 
 // Nothing here may grow without a bound: Claude Code waits for this process, so an unbounded
-// read or scan is a way to stall it. Both caps are far above any real value (stdin arrives
+// read or scan is a way to stall it. Every cap is far above any real value (stdin arrives
 // decoded, so its cap counts characters rather than bytes).
 const MAX_STDIN_CHARS = 1024 * 1024;
-const MAX_SWEEP_ENTRIES = 512;
+const MAX_SWEEP_ENTRIES = 4096;
+const MAX_SWEEP_START = 8192;
 
 let raw = "";
 let truncated = false;
@@ -36,21 +37,39 @@ process.stdin.on("data", c => {
     // Sweep away stray tmp files older than an hour (best effort).
     // Read one entry at a time under a cap rather than taking the whole listing: .claude sits in
     // the workspace, so its entry count is not ours to bound, and this runs on the path Claude
-    // Code waits for. A run that stops at the cap cleans a slice, and the hook runs again.
+    // Code waits for.
+    // The start is random because a fixed one is no rotation at all: every run reopens the
+    // stream at the same place, so a tmp file sitting past the cap would be skipped by each run
+    // alike and never collected. Reaching the end of the stream wraps to the start once, which
+    // is what keeps an ordinary .claude - far smaller than one window - swept in full every
+    // time rather than mostly skipped. A directory larger than MAX_SWEEP_START +
+    // MAX_SWEEP_ENTRIES is covered as a moving window instead, and that residue is accepted
+    // rather than scanned for: it stays small because the write below cleans up after itself,
+    // leaving this sweep only the tmp file of a process killed between the write and the rename.
     try {
-      const entries = fs.opendirSync(dir);
-      try {
-        for (let seen = 0; seen < MAX_SWEEP_ENTRIES; seen++) {
-          const entry = entries.readSync();
-          if (entry === null) break;
-          if (!entry.name.startsWith(".chirin-notify-tmp-")) continue;
-          try {
-            const p = path.join(dir, entry.name);
-            if (Date.now() - fs.statSync(p).mtimeMs > 3600_000) fs.unlinkSync(p);
-          } catch {}
+      let examined = 0;
+      for (let pass = 0; pass < 2 && examined < MAX_SWEEP_ENTRIES; pass++) {
+        const entries = fs.opendirSync(dir);
+        try {
+          if (pass === 0) {
+            const start = Math.floor(Math.random() * MAX_SWEEP_START);
+            for (let skipped = 0; skipped < start; skipped++) {
+              if (entries.readSync() === null) break;
+            }
+          }
+          while (examined < MAX_SWEEP_ENTRIES) {
+            const entry = entries.readSync();
+            if (entry === null) break;
+            examined++;
+            if (!entry.name.startsWith(".chirin-notify-tmp-")) continue;
+            try {
+              const p = path.join(dir, entry.name);
+              if (Date.now() - fs.statSync(p).mtimeMs > 3600_000) fs.unlinkSync(p);
+            } catch {}
+          }
+        } finally {
+          entries.closeSync();
         }
-      } finally {
-        entries.closeSync();
       }
     } catch {}
 
@@ -58,29 +77,39 @@ process.stdin.on("data", c => {
     const suffix = Math.random().toString(36).slice(2) || "0";
     // Unique tmp name (no collision even with concurrent runs)
     const tmp = path.join(dir, `.chirin-notify-tmp-${process.pid}-${suffix}`);
-    // Stringify every field and cap its length (a huge event/cwd would exceed 64KB and be silently skipped)
-    fs.writeFileSync(tmp, JSON.stringify({
-      ts: `${Date.now()}-${suffix}`,
-      event: String(d.hook_event_name ?? "unknown").slice(0, 64),
-      // Only Notification carries this; it is "" for every other event. It is what lets a rule
-      // tell an ordinary prompt apart from background-agent traffic (the message text cannot).
-      notification_type: String(d.notification_type ?? "").slice(0, 64),
-      // Only Stop / SubagentStop carry background_tasks, so the count is written only for
-      // those: on any other event a rule matching "^0$" would fire too. A missing list counts
-      // as 0, so a Claude Code that stops sending the field degrades to "always notify"
-      // rather than to silently never notifying.
-      ...(d.hook_event_name === "Stop" || d.hook_event_name === "SubagentStop"
-        ? {
-            background_task_count: String(
-              Array.isArray(d.background_tasks) ? d.background_tasks.length : 0,
-            ),
-          }
-        : {}),
-      message: String(d.message ?? "").slice(0, 200),
-      cwd: String(d.cwd ?? "").slice(0, 512),
-    }));
-    // A rename within the same directory = an atomic swap (last-write-wins)
-    fs.renameSync(tmp, path.join(dir, "chirin-notify-state.json"));
+    try {
+      // Stringify every field and cap its length (a huge event/cwd would exceed 64KB and be silently skipped)
+      fs.writeFileSync(tmp, JSON.stringify({
+        ts: `${Date.now()}-${suffix}`,
+        event: String(d.hook_event_name ?? "unknown").slice(0, 64),
+        // Only Notification carries this; it is "" for every other event. It is what lets a rule
+        // tell an ordinary prompt apart from background-agent traffic (the message text cannot).
+        notification_type: String(d.notification_type ?? "").slice(0, 64),
+        // Only Stop / SubagentStop carry background_tasks, so the count is written only for
+        // those: on any other event a rule matching "^0$" would fire too. A missing list counts
+        // as 0, so a Claude Code that stops sending the field degrades to "always notify"
+        // rather than to silently never notifying.
+        ...(d.hook_event_name === "Stop" || d.hook_event_name === "SubagentStop"
+          ? {
+              background_task_count: String(
+                Array.isArray(d.background_tasks) ? d.background_tasks.length : 0,
+              ),
+            }
+          : {}),
+        message: String(d.message ?? "").slice(0, 200),
+        cwd: String(d.cwd ?? "").slice(0, 512),
+      }));
+      // A rename within the same directory = an atomic swap (last-write-wins)
+      fs.renameSync(tmp, path.join(dir, "chirin-notify-state.json"));
+    } catch (e) {
+      // Either step can leave the tmp file behind, and what makes them fail persists (the state
+      // file replaced by a directory, a full or read-only filesystem), so one firing failing
+      // means every firing failing. Without this the hook leaks a file per event and outgrows
+      // any bounded sweep - the leak has to be closed here, where the name is known, rather
+      // than left to a scan that may never reach it.
+      try { fs.unlinkSync(tmp); } catch {}
+      throw e;
+    }
   } catch {
     // A failed write (read-only / ENOSPC / .claude being a regular file) must not stop Claude Code
   }
