@@ -38,14 +38,18 @@ build rather than a review finding:
 | Invariant | What catches it |
 |---|---|
 | runtime `dependencies` stays empty | `npm run check:zero-deps` |
-| the `.js` extension on relative imports | `tsc` under NodeNext |
-| the core never imports `vscode` | `npm test`, where the module does not resolve |
+| the `.js` extension on relative imports | `npm test`, in `test/sourceConventions.test.ts` |
+| the core never imports `vscode` | `npm test`, in `test/sourceConventions.test.ts` |
 | the `.vsix` carries only the distribution | the allowlist step in `ci.yml` |
 | a dependency with a known high advisory | `npm audit --audit-level=high` in `ci.yml` |
 | a VS Code API newer than `engines.vscode` | the pinned `@types/vscode`, as a type error |
-| the constants the README states | the tests that pin them |
 
-Two things in that table are worth flagging when the change is to the check itself rather than
+Neither of the first two is a compiler error, which is why they are tests: under a CommonJS
+NodeNext emit an extensionless relative import compiles, and a type-only `vscode` import is
+erased before anything can fail to resolve it. Weakening one of those tests is a change to
+the guarantee, not to a test.
+
+Two more things in that table are worth flagging when the change is to the check rather than
 to the code: loosening the `@types/vscode` pin to a range, and adding a bundler or any
 generated artifact that `check:zero-deps` does not see. Both trade a mechanical guarantee for
 a prose rule.
@@ -121,11 +125,18 @@ configuration lost, or an install broken on a supported VS Code.
     user-composed command or a copy at another path belongs to them. Changing the installed
     command means changing the migration handling that recognises the old one.
 
-13. **Localization keys.** Adding or removing a user-facing string means both
+13. **A constant the README states.** The convention is that a documented constant is one a
+    test pins, and it is not upheld everywhere: `test/leader.test.ts`, for instance, builds
+    its fixtures from `MAX_LOCK_BYTES` rather than asserting it is still the 4KB the README
+    describes, so widening it leaves the build green and the README wrong. Until each
+    documented value is asserted against its literal, a change to one is worth reading
+    against what the README claims.
+
+14. **Localization keys.** Adding or removing a user-facing string means both
     `package.nls.json` and `package.nls.ja.json`, and a walkthrough panel means both language
-    directories. This is the one convention in this list that no test enforces yet, so it is
-    worth checking by eye. A test that pins the two bundles to the same key set would retire
-    this rule.
+    directories. Nothing checks this, so it is worth checking by eye. A test that pins the
+    two bundles to the same key set would retire this rule, as one asserting the documented
+    constants would retire the rule above it.
 
 ## What not to report
 
