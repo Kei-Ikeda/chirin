@@ -39,14 +39,36 @@ jobs:
       - run: npm run check:zero-deps
       - run: npm run build
       - run: npm test
-      # Confirm the .vsix can be built (and that it carries no src/ or test/)
+      # Confirm the .vsix can be built, and that it carries nothing but the distribution
       - run: npx vsce package --out chirin.vsix
-      - name: Confirm the .vsix carries no sources
+      - name: Confirm the .vsix carries only the distribution
         run: |
-          # Tell an unzip failure apart from grep finding nothing. Piping them directly would
-          # let the check pass even when unzip fails (pipefail does not apply inside an if).
-          listing=$(unzip -l chirin.vsix)
-          if grep -E "extension/(src|test|dist/test|tmp|\.tmp)/" <<< "$listing"; then
-            echo "::error::the .vsix contains sources, tests or scratch files"
+          # An allowlist, not a list of things to reject: vsce packages untracked files too, so
+          # a denylist only ever stops what someone thought to name. Anything this repository
+          # does not account for has to fail instead of shipping unnoticed.
+          # Assigning from the substitution tells an unzip failure apart from an empty listing
+          # (the step runs under `bash -e`, so a failing unzip ends it right here).
+          listing=$(unzip -Z1 chirin.vsix)
+          # The distribution is dist/src, hooks, media, the nls bundles, README and LICENSE.
+          # dist/src is limited to .js so a stray .map or dist/test/ cannot pass, and the
+          # walkthrough keeps its one localized sibling directory (see README, Localization).
+          allowed='^(\[Content_Types\]\.xml|extension\.vsixmanifest|extension/(LICENSE\.txt|readme\.md|package\.json|package\.nls(\.ja)?\.json|dist/src/.+\.js|hooks/[^/]+|media/icon\.png|media/walkthrough/(ja/)?[^/]+\.md))$'
+          unexpected=$(grep -vE "$allowed" <<< "$listing") && status=0 || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the .vsix carries files this repository does not account for"
+            echo "$unexpected"
+            exit 1
+          elif [ "$status" -ne 1 ]; then
+            # 1 is "nothing outside the allowlist"; anything else means grep itself failed and
+            # the check never ran, which must not read as success
+            echo "::error::grep failed while checking the .vsix listing"
             exit 1
           fi
+          # An allowlist can only reject what is there, never notice what is absent, so pin
+          # down that the .vsix actually carries the extension
+          for required in extension/package.json extension/dist/src/extension.js; do
+            if ! grep -qxF "$required" <<< "$listing"; then
+              echo "::error::$required is missing from the .vsix"
+              exit 1
+            fi
+          done
