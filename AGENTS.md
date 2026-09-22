@@ -49,6 +49,14 @@ NodeNext emit an extensionless relative import compiles, and a type-only `vscode
 erased before anything can fail to resolve it. Weakening one of those tests is a change to
 the guarantee, not to a test.
 
+Those two read the sources with patterns rather than a parser, so what they catch is the
+shape that gets written by accident -- a forgotten extension, a type-only import, a file in
+a new subdirectory. A specifier hidden between tokens, say by a comment sitting between
+`require` and its parenthesis, goes unseen. That limit is deliberate and not worth closing:
+anyone who can write that can delete the test on the same commit, and what this repository
+defends against is the container's input, not its own history. Nothing a user relies on rests
+on these two -- the defenses that do are in the shipped code, and each is listed below.
+
 Two more things in that table are worth flagging when the change is to the check rather than
 to the code: loosening the `@types/vscode` pin to a range, and adding a bundler or any
 generated artifact that `check:zero-deps` does not see. Both trade a mechanical guarantee for
