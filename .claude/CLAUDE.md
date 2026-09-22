@@ -41,6 +41,22 @@ repository root. That file is the review checklist; it points here for the archi
 than restating it, so the two are meant to be read together and a change to one is usually a
 change to both. A review can be re-requested by commenting `@codex review`.
 
+Wait for that review before merging, and look for it in the right place, because none of this
+is where you would first check:
+
+- It arrives as a review with inline comments. `gh pr checks` never shows it, and neither does
+  `gh api repos/{owner}/{repo}/issues/{n}/comments`; the findings are under
+  `.../pulls/{n}/comments`
+- A 👍 reaction on the pull request means it reviewed and found nothing. 👀 means it is still
+  running, so an absence of comments is not yet an all-clear
+- It reviews each head it is pushed, so a fix gets a round of its own. Wait for the round whose
+  reviewed commit is the one being merged
+
+Findings are worth reproducing before they are worth arguing with. Every one raised while this
+file, `AGENTS.md` and the tests behind them were written turned out to be real, and most were
+the same shape: a claim that an invariant was mechanically enforced, wider than the check
+actually behind it.
+
 ## Architecture
 
 ### Where it runs (the foundation of every assumption in this extension)
