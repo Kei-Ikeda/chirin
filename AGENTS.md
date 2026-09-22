@@ -43,21 +43,30 @@ build rather than a review finding:
 | the `.vsix` carries only the distribution | the allowlist step in `ci.yml` |
 | a dependency with a known high advisory | `npm audit --audit-level=high` in `ci.yml` |
 | a VS Code API newer than `engines.vscode` | the pinned `@types/vscode`, as a type error |
-| an **exported** limit drifting from the README | `npm test`, in `test/documentedLimits.test.ts` |
-| the two nls bundles and the walkthrough pairing | `npm test`, in `test/localization.test.ts` |
+| a limit `test/documentedLimits.test.ts` lists drifting from the README | `npm test` |
+| the localization pairing, as far as `test/localization.test.ts` states it | `npm test` |
 
 Neither of the first two is a compiler error, which is why they are tests: under a CommonJS
 NodeNext emit an extensionless relative import compiles, and a type-only `vscode` import is
 erased before anything can fail to resolve it. Weakening one of those tests is a change to
 the guarantee, not to a test.
 
-Those two read the sources with patterns rather than a parser, so what they catch is the
-shape that gets written by accident -- a forgotten extension, a type-only import, a file in
-a new subdirectory. A specifier hidden between tokens, say by a comment sitting between
-`require` and its parenthesis, goes unseen. That limit is deliberate and not worth closing:
-anyone who can write that can delete the test on the same commit, and what this repository
-defends against is the container's input, not its own history. Nothing a user relies on rests
-on these two -- the defenses that do are in the shipped code, and each is listed below.
+The two source-scanning tests read the sources with patterns rather than a parser, so what
+they catch is the shape that gets written by accident -- a forgotten extension, a type-only
+import, a file in a new subdirectory. A specifier hidden between tokens, say by a comment
+sitting between `require` and its parenthesis, goes unseen. That limit is deliberate and not
+worth closing: anyone who can write that can delete the test on the same commit, and what
+this repository defends against is the container's input, not its own history. Nothing a user
+relies on rests on these two -- the defenses that do are in the shipped code, and each is
+listed below.
+
+The last two rows name a test rather than a category, and that is deliberate. Written as a
+category -- "every documented limit", "the localization pairing" -- the sentence is wider than
+any check behind it, which is how six rounds of review each found something the claim covered
+and the test did not. A row scoped to what its test enumerates cannot outrun it. Both tests
+assert their own coverage where that is possible: the localization one fails if the manifest
+gains a reference through a field it does not enumerate, which says to extend the list rather
+than leaving the gap silent.
 
 Two more things in that table are worth flagging when the change is to the check rather than
 to the code: loosening the `@types/vscode` pin to a range, and adding a bundler or any

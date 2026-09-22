@@ -53,6 +53,71 @@ test("no bundle key is left behind by package.json", () => {
   assert.deepEqual(orphans, [], `nothing in package.json references:\n${orphans.join("\n")}`);
 });
 
+/** A user-facing string package.json contributes, and where in the manifest it sits. */
+interface Contributed {
+  where: string;
+  value: string;
+}
+
+/**
+ * Every field package.json contributes a user-facing string through.
+ *
+ * Collecting only the values that already look like `%key%` cannot notice the case that
+ * matters: a title replaced with inline English and its key deleted from both bundles leaves
+ * equal key sets, no missing reference and no orphan, so every other check here passes while
+ * a Japanese reader is handed English. The fields have to be enumerated first and checked
+ * second, and the test below asserts the enumeration is complete.
+ */
+function contributed(): Contributed[] {
+  const manifestJson = JSON.parse(manifest) as {
+    description?: string;
+    capabilities?: { untrustedWorkspaces?: { description?: string } };
+    contributes?: {
+      configuration?: { properties?: Record<string, { description?: string; markdownDescription?: string }> };
+      commands?: { command?: string; title?: string }[];
+      walkthroughs?: {
+        id?: string;
+        title?: string;
+        description?: string;
+        steps?: {
+          id?: string;
+          title?: string;
+          description?: string;
+          media?: { markdown?: string; altText?: string };
+        }[];
+      }[];
+    };
+  };
+  const found: Contributed[] = [];
+  const add = (where: string, value: unknown): void => {
+    if (typeof value === "string") found.push({ where, value });
+  };
+
+  add("description", manifestJson.description);
+  add("capabilities.untrustedWorkspaces.description", manifestJson.capabilities?.untrustedWorkspaces?.description);
+  for (const [name, property] of Object.entries(manifestJson.contributes?.configuration?.properties ?? {})) {
+    add(`configuration.${name}.description`, property.description);
+    add(`configuration.${name}.markdownDescription`, property.markdownDescription);
+  }
+  for (const command of manifestJson.contributes?.commands ?? []) {
+    add(`commands.${command.command}.title`, command.title);
+  }
+  for (const walkthrough of manifestJson.contributes?.walkthroughs ?? []) {
+    add(`walkthroughs.${walkthrough.id}.title`, walkthrough.title);
+    add(`walkthroughs.${walkthrough.id}.description`, walkthrough.description);
+    for (const step of walkthrough.steps ?? []) {
+      const at = `walkthroughs.${walkthrough.id}.steps.${step.id}`;
+      add(`${at}.title`, step.title);
+      add(`${at}.description`, step.description);
+      add(`${at}.media.markdown`, step.media?.markdown);
+      add(`${at}.media.altText`, step.media?.altText);
+    }
+  }
+  return found;
+}
+
+const contributedStrings = contributed();
+
 /**
  * The walkthrough keys, taken from the manifest rather than from how they are named.
  *
@@ -60,17 +125,13 @@ test("no bundle key is left behind by package.json", () => {
  * step's `media.markdown` at it. Collecting them by a `.media` suffix means a step renamed to
  * anything else silently leaves the panel checks below, taking its language pairing with it.
  */
-const mediaKeys = (() => {
-  const contributed = JSON.parse(manifest) as {
-    contributes?: { walkthroughs?: { steps?: { media?: { markdown?: string } }[] }[] };
-  };
-  const keys = (contributed.contributes?.walkthroughs ?? [])
-    .flatMap((walkthrough) => walkthrough.steps ?? [])
-    .map((step) => step.media?.markdown)
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.replace(/^%|%$/g, ""));
-  return [...new Set(keys)];
-})();
+const mediaKeys = [
+  ...new Set(
+    contributedStrings
+      .filter(({ where }) => where.endsWith(".media.markdown"))
+      .map(({ value }) => value.replace(/^%|%$/g, "")),
+  ),
+];
 
 test("every walkthrough panel exists in both languages", () => {
   assert.ok(mediaKeys.length > 0, "no walkthrough media keys found; this test stopped covering anything");
@@ -99,4 +160,28 @@ test("each language resolves to its own walkthrough panel", () => {
     .filter(({ expected, actual }) => expected !== actual)
     .map(({ key, expected, actual }) => `${key}: expected ${expected}, package.nls.ja.json says ${actual}`);
   assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("every contributed user-facing string is a localization reference", () => {
+  const inlined = contributedStrings
+    .filter(({ value }) => !/^%[^%]+%$/.test(value))
+    .map(({ where, value }) => `${where} is the literal ${JSON.stringify(value)}, not a %key%`);
+  assert.deepEqual(inlined, [], inlined.join("\n"));
+});
+
+test("the enumerated fields cover every localization reference in the manifest", () => {
+  // Without this, the test above only covers the fields someone thought to list, and a new
+  // kind of contributed string would be unlocalized with nothing failing. Comparing the
+  // enumeration against every %key% the manifest mentions is what makes it complete: a
+  // reference the enumeration cannot reach fails here and says to extend it.
+  const enumerated = new Set(
+    contributedStrings
+      .filter(({ value }) => /^%[^%]+%$/.test(value))
+      .map(({ value }) => value.slice(1, -1)),
+  );
+  assert.deepEqual(
+    [...referenced].sort().filter((key) => !enumerated.has(key)),
+    [],
+    "package.json references a key through a field contributed() does not enumerate",
+  );
 });

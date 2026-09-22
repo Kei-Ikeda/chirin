@@ -16,7 +16,7 @@ import path from "node:path";
 import test from "node:test";
 import { MAX_CONFIG_BYTES, MAX_MATCH_TARGET_LEN } from "../src/config.js";
 import { MAX_LOCK_BYTES } from "../src/leader.js";
-import { MESSAGE_MAX_LEN, SUBTITLE_MAX_LEN, TITLE_MAX_LEN } from "../src/notifier.js";
+import { MESSAGE_MAX_LEN, SOUND_PATTERN, SUBTITLE_MAX_LEN, TITLE_MAX_LEN } from "../src/notifier.js";
 import {
   DEFAULT_LOG_WINDOW_BYTES,
   MAX_LOG_LINES_PER_POLL,
@@ -54,6 +54,16 @@ const documented = [
     actual: MAX_LOG_WINDOW_BYTES,
     stated: 16 * 1024 * 1024,
     spelling: "4KB–16MB",
+  },
+  {
+    // Documented as the pattern itself, so the pattern's source is what the README states.
+    // config.test.ts rejects a 31-character name, which pins this against widening only:
+    // narrowing it to 20 would keep that test green and start refusing documented names.
+    name: "SOUND_PATTERN",
+    anchor: "`rules[].notify.sound`",
+    actual: SOUND_PATTERN.source,
+    stated: "^[A-Za-z ]{1,30}$",
+    spelling: "`/^[A-Za-z ]{1,30}$/`",
   },
   {
     name: "MAX_LOG_LINES_PER_POLL",
