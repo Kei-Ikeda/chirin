@@ -27,8 +27,9 @@ import {
 } from "../src/sources.js";
 
 /**
- * One row per limit: the constant, the value the README states, the line that states it, and
- * the phrase to find on that line.
+ * One row per documented occurrence: the constant, the value the README states, the line that
+ * states it, and the phrase to find on that line. A constant can have more than one row when
+ * the README promises the same limit in more than one place; each promise has to stay true.
  *
  * The anchor is what makes the check per-row, and searching the whole README is not enough
  * even with a phrase: the title and subtitle limits are both "Truncated to 60 characters", so
@@ -38,6 +39,20 @@ import {
 const documented = [
   { name: "MAX_CONFIG_BYTES", anchor: "Config reads, including auto-reload checks", actual: MAX_CONFIG_BYTES, stated: 1024 * 1024, spelling: "capped at 1MB" },
   { name: "MAX_MATCH_TARGET_LEN", anchor: "Malicious input to a user-defined regex", actual: MAX_MATCH_TARGET_LEN, stated: 200, spelling: "capped at 200 characters" },
+  {
+    name: "MAX_MATCH_TARGET_LEN (contains pattern)",
+    anchor: "| `contains` | `field`, `pattern` |",
+    actual: MAX_MATCH_TARGET_LEN,
+    stated: 200,
+    spelling: "`pattern` <= 200 characters",
+  },
+  {
+    name: "MAX_MATCH_TARGET_LEN (runtime truncation)",
+    anchor: "The match target is truncated",
+    actual: MAX_MATCH_TARGET_LEN,
+    stated: 200,
+    spelling: "first 200",
+  },
   { name: "MAX_LOCK_BYTES", anchor: "Huge or symlinked watcher lock", actual: MAX_LOCK_BYTES, stated: 4096, spelling: "cap reads at 4KB" },
   { name: "TITLE_MAX_LEN", anchor: "`rules[].notify.title`", actual: TITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
   { name: "SUBTITLE_MAX_LEN", anchor: "`rules[].notify.subtitle`", actual: SUBTITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
