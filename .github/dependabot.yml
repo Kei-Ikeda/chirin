@@ -1,0 +1,20 @@
+# Version updates, on top of the security updates that are enabled in the repository settings.
+#
+# Security updates alone were not enough: the js-yaml advisory reached this tree through four
+# levels of transitive devDependencies, where the fix was a major bump of the direct dependency
+# (@vscode/vsce), so no automatic pull request arrived and the advisory sat on main until
+# someone ran `npm audit` by hand.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  # This is what keeps the SHA pins in the workflows from going stale. Pinning an action by
+  # commit SHA stops it from being repointed at other code, at the cost of freezing it;
+  # Dependabot rewrites both the SHA and its version comment, so the pins stay current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
