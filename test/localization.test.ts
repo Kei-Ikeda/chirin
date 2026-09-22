@@ -53,8 +53,24 @@ test("no bundle key is left behind by package.json", () => {
   assert.deepEqual(orphans, [], `nothing in package.json references:\n${orphans.join("\n")}`);
 });
 
-/** The walkthrough keys, which resolve to a file rather than to a string shown as-is. */
-const mediaKeys = Object.keys(english).filter((key) => key.endsWith(".media"));
+/**
+ * The walkthrough keys, taken from the manifest rather than from how they are named.
+ *
+ * A key name is an arbitrary identifier: what makes one a panel is package.json pointing a
+ * step's `media.markdown` at it. Collecting them by a `.media` suffix means a step renamed to
+ * anything else silently leaves the panel checks below, taking its language pairing with it.
+ */
+const mediaKeys = (() => {
+  const contributed = JSON.parse(manifest) as {
+    contributes?: { walkthroughs?: { steps?: { media?: { markdown?: string } }[] }[] };
+  };
+  const keys = (contributed.contributes?.walkthroughs ?? [])
+    .flatMap((walkthrough) => walkthrough.steps ?? [])
+    .map((step) => step.media?.markdown)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.replace(/^%|%$/g, ""));
+  return [...new Set(keys)];
+})();
 
 test("every walkthrough panel exists in both languages", () => {
   assert.ok(mediaKeys.length > 0, "no walkthrough media keys found; this test stopped covering anything");

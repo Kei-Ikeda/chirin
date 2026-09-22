@@ -25,33 +25,39 @@ import {
 } from "../src/sources.js";
 
 /**
- * One row per limit: the constant, the value the README states, and the phrase the README
- * says it in. The phrase carries its surrounding words on purpose -- "4KB" alone appears
- * three times, so a bare number would still be found after the one that matters was edited.
- * Changing a limit means changing the value here and the prose it appears in.
+ * One row per limit: the constant, the value the README states, the line that states it, and
+ * the phrase to find on that line.
+ *
+ * The anchor is what makes the check per-row, and searching the whole README is not enough
+ * even with a phrase: the title and subtitle limits are both "Truncated to 60 characters", so
+ * rewriting the subtitle row alone leaves the title's copy of the phrase for both rows to
+ * find. Anchoring each row to its own line is what notices that.
  */
 const documented = [
-  { name: "MAX_CONFIG_BYTES", actual: MAX_CONFIG_BYTES, stated: 1024 * 1024, spelling: "capped at 1MB" },
-  { name: "MAX_MATCH_TARGET_LEN", actual: MAX_MATCH_TARGET_LEN, stated: 200, spelling: "capped at 200 characters" },
-  { name: "MAX_LOCK_BYTES", actual: MAX_LOCK_BYTES, stated: 4096, spelling: "cap reads at 4KB" },
-  { name: "TITLE_MAX_LEN", actual: TITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
-  { name: "SUBTITLE_MAX_LEN", actual: SUBTITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
-  { name: "MESSAGE_MAX_LEN", actual: MESSAGE_MAX_LEN, stated: 120, spelling: "Truncated to 120 characters" },
+  { name: "MAX_CONFIG_BYTES", anchor: "Config reads, including auto-reload checks", actual: MAX_CONFIG_BYTES, stated: 1024 * 1024, spelling: "capped at 1MB" },
+  { name: "MAX_MATCH_TARGET_LEN", anchor: "Malicious input to a user-defined regex", actual: MAX_MATCH_TARGET_LEN, stated: 200, spelling: "capped at 200 characters" },
+  { name: "MAX_LOCK_BYTES", anchor: "Huge or symlinked watcher lock", actual: MAX_LOCK_BYTES, stated: 4096, spelling: "cap reads at 4KB" },
+  { name: "TITLE_MAX_LEN", anchor: "`rules[].notify.title`", actual: TITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
+  { name: "SUBTITLE_MAX_LEN", anchor: "`rules[].notify.subtitle`", actual: SUBTITLE_MAX_LEN, stated: 60, spelling: "Truncated to 60 characters" },
+  { name: "MESSAGE_MAX_LEN", anchor: "`rules[].notify.message`", actual: MESSAGE_MAX_LEN, stated: 120, spelling: "Truncated to 120 characters" },
   {
     name: "DEFAULT_LOG_WINDOW_BYTES",
+    anchor: "`windowBytes` (default",
     actual: DEFAULT_LOG_WINDOW_BYTES,
     stated: 1024 * 1024,
     spelling: "default 1MB",
   },
-  { name: "MIN_LOG_WINDOW_BYTES", actual: MIN_LOG_WINDOW_BYTES, stated: 4 * 1024, spelling: "4KB–16MB" },
+  { name: "MIN_LOG_WINDOW_BYTES", anchor: "`windowBytes` (default", actual: MIN_LOG_WINDOW_BYTES, stated: 4 * 1024, spelling: "4KB–16MB" },
   {
     name: "MAX_LOG_WINDOW_BYTES",
+    anchor: "`windowBytes` (default",
     actual: MAX_LOG_WINDOW_BYTES,
     stated: 16 * 1024 * 1024,
     spelling: "4KB–16MB",
   },
   {
     name: "MAX_LOG_LINES_PER_POLL",
+    anchor: "`windowBytes` (default",
     actual: MAX_LOG_LINES_PER_POLL,
     stated: 2000,
     spelling: "2,000 complete lines",
@@ -64,12 +70,20 @@ test("every limit the README documents still holds the value it documents", () =
   }
 });
 
-test("the README still spells each documented limit", () => {
+test("the README still spells each documented limit on its own line", () => {
   // The pin above catches a changed constant. This catches the other direction: prose edited
   // away from the value, leaving the two describing different limits.
-  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
-  const missing = documented
-    .filter(({ spelling }) => !readme.includes(spelling))
-    .map(({ name, spelling }) => `${name}: README no longer says "${spelling}"`);
-  assert.deepEqual(missing, [], missing.join("\n"));
+  const lines = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8").split("\n");
+  const wrong: string[] = [];
+  for (const { name, anchor, spelling } of documented) {
+    const matched = lines.filter((line) => line.includes(anchor));
+    if (matched.length !== 1) {
+      // An anchor matching anything but one line is not the README being wrong, it is this row
+      // no longer knowing where to look
+      wrong.push(`${name}: "${anchor}" matches ${matched.length} README lines, expected 1`);
+    } else if (!matched[0]!.includes(spelling)) {
+      wrong.push(`${name}: the README line at "${anchor}" no longer says "${spelling}"`);
+    }
+  }
+  assert.deepEqual(wrong, [], wrong.join("\n"));
 });
