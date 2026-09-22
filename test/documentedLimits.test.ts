@@ -173,13 +173,15 @@ test("the README still states each documented lower bound on its own line", () =
 const patternEdges = [
   {
     field: "match.pattern",
-    anchor: "Regular expression (`pattern` <= 256 characters)",
+    anchor: "| `regex` | `field`, `pattern` |",
+    spelling: "Regular expression (`pattern` <= 256 characters)",
     longest: 256,
     build: (length: number) => ({ type: "regex", field: "event", pattern: "p".repeat(length) }),
   },
   {
     field: "rules[].id",
     anchor: "| `rules[].id` |",
+    spelling: "`/^[a-z0-9][a-z0-9-]{0,63}$/`",
     longest: 64,
     build: () => ({ type: "event", equals: "Stop" }),
   },
@@ -210,10 +212,19 @@ test("every documented pattern edge is accepted and the character past it is not
 });
 
 test("the README still states each documented pattern edge on its own line", () => {
+  // Finding the row is not enough. The behavioural test above is fixed at the documented
+  // length, so a README rewritten to a different one -- {0,31} for the rule id, say -- has to
+  // fail here or the two describe different limits with everything green.
   const lines = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8").split("\n");
-  const wrong = patternEdges
-    .filter(({ anchor }) => lines.filter((line) => line.includes(anchor)).length !== 1)
-    .map(({ field, anchor }) => `${field}: "${anchor}" no longer names exactly one README line`);
+  const wrong: string[] = [];
+  for (const { field, anchor, spelling } of patternEdges) {
+    const matched = lines.filter((line) => line.includes(anchor));
+    if (matched.length !== 1) {
+      wrong.push(`${field}: "${anchor}" matches ${matched.length} README lines, expected 1`);
+    } else if (!matched[0]!.includes(spelling)) {
+      wrong.push(`${field}: the README line at "${anchor}" no longer says "${spelling}"`);
+    }
+  }
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
@@ -222,6 +233,15 @@ test("a json-state file at the documented 64KB is read, and one byte past it is 
   // roughly 70KB -- which leaves the edge free to move. At 60KB a state file the README calls
   // readable is dropped, silently, with that test still green.
   const documented = 64 * 1024;
+  // The fixture is a literal, so the README row has to be read or a documentation change
+  // alone leaves the two describing different limits.
+  const row = fs
+    .readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8")
+    .split("\n")
+    .filter((line) => line.includes("| `json-state` | A change in the `ts` field |"));
+  assert.equal(row.length, 1, "the README row stating the json-state limit is no longer findable");
+  assert.ok(row[0]!.includes("| 64KB |"), `the README no longer states the json-state limit as 64KB: ${row[0]}`);
+
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chirin-limits-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 

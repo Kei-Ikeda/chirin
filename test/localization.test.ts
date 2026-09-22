@@ -167,14 +167,21 @@ test("each language resolves to its own walkthrough panel", () => {
   // passes while a Japanese reader is shown the English panel. That is the quiet degradation
   // these tests exist for, so the relationship itself is asserted -- the Japanese panel is
   // the English one under the `ja/` directory, as it is laid out on disk.
-  const wrong = mediaKeys
-    .map((key) => ({
-      key,
-      expected: english[key]!.replace("walkthrough/", "walkthrough/ja/"),
-      actual: japanese[key]!,
-    }))
-    .filter(({ expected, actual }) => expected !== actual)
-    .map(({ key, expected, actual }) => `${key}: expected ${expected}, package.nls.ja.json says ${actual}`);
+  const wrong: string[] = [];
+  for (const key of mediaKeys) {
+    const panel = english[key]!;
+    // Derive only from a path that is a walkthrough panel. Without this the replacement is a
+    // no-op on anything else -- both locales set to README.md would agree with each other and
+    // pass, with a Japanese reader handed the shared English file.
+    if (!panel.startsWith("media/walkthrough/")) {
+      wrong.push(`${key}: package.nls.json points outside media/walkthrough/: ${panel}`);
+      continue;
+    }
+    const expected = panel.replace("media/walkthrough/", "media/walkthrough/ja/");
+    if (japanese[key] !== expected) {
+      wrong.push(`${key}: expected ${expected}, package.nls.ja.json says ${japanese[key]}`);
+    }
+  }
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
