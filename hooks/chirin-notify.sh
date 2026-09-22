@@ -38,14 +38,16 @@ process.stdin.on("data", c => {
     // Read one entry at a time under a cap rather than taking the whole listing: .claude sits in
     // the workspace, so its entry count is not ours to bound, and this runs on the path Claude
     // Code waits for.
-    // The start is random because a fixed one is no rotation at all: every run reopens the
-    // stream at the same place, so a tmp file sitting past the cap would be skipped by each run
-    // alike and never collected. Reaching the end of the stream wraps to the start once, which
-    // is what keeps an ordinary .claude - far smaller than one window - swept in full every
-    // time rather than mostly skipped. A directory larger than MAX_SWEEP_START +
-    // MAX_SWEEP_ENTRIES is covered as a moving window instead, and that residue is accepted
-    // rather than scanned for: it stays small because the write below cleans up after itself,
-    // leaving this sweep only the tmp file of a process killed between the write and the rename.
+    // Exactly what this reaches, stated narrowly because a cap is easy to describe as more than
+    // it is: entries 0 through MAX_SWEEP_START + MAX_SWEEP_ENTRIES of the stream, and nothing
+    // past that, on any run. Within that prefix the random start rotates the window, so a tmp
+    // file anywhere inside it is collected after a few firings rather than skipped identically
+    // by every one; the wrap at end of stream is what keeps an ordinary .claude, far smaller
+    // than a single window, swept in full every time instead of mostly skipped.
+    // A tmp file past that prefix is never collected. Reaching it would take a cursor persisted
+    // between firings, which is more machinery than the residue is worth: the write below
+    // cleans up after itself, so what is left for this sweep is the tmp file of a process
+    // killed between the write and the rename.
     try {
       let examined = 0;
       for (let pass = 0; pass < 2 && examined < MAX_SWEEP_ENTRIES; pass++) {
