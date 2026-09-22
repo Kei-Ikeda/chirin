@@ -9,24 +9,50 @@ exec node -e "$(cat <<'CHIRIN_HOOK_JS'
 // Exit 0 no matter what happens.
 process.on("uncaughtException", () => process.exit(0));
 
+// Nothing here may grow without a bound: Claude Code waits for this process, so an unbounded
+// read or scan is a way to stall it. Both caps are far above any real value (stdin arrives
+// decoded, so its cap counts characters rather than bytes).
+const MAX_STDIN_CHARS = 1024 * 1024;
+const MAX_SWEEP_ENTRIES = 512;
+
 let raw = "";
+let truncated = false;
 process.stdin.setEncoding("utf8"); // keeps multi-byte UTF-8 from breaking at a chunk boundary
 process.stdin.on("error", () => process.exit(0));
-process.stdin.on("data", c => raw += c).on("end", () => {
+process.stdin.on("data", c => {
+  // Past the cap the rest is read and discarded rather than the stream being closed: closing it
+  // would hand the writer an EPIPE. A truncated payload fails to parse and notifies as
+  // "unknown", which is the right way to degrade - a notification that never arrives is worse.
+  if (truncated) return;
+  if (raw.length + c.length > MAX_STDIN_CHARS) truncated = true;
+  else raw += c;
+}).on("end", () => {
   try {
     let d = {}; try { d = JSON.parse(raw); } catch {}
     const fs = require("fs"), path = require("path");
     const dir = path.join(process.env.CLAUDE_PROJECT_DIR ?? ".", ".claude");
     fs.mkdirSync(dir, { recursive: true });
 
-    // Sweep away stray tmp files older than an hour (best effort)
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.startsWith(".chirin-notify-tmp-")) continue;
+    // Sweep away stray tmp files older than an hour (best effort).
+    // Read one entry at a time under a cap rather than taking the whole listing: .claude sits in
+    // the workspace, so its entry count is not ours to bound, and this runs on the path Claude
+    // Code waits for. A run that stops at the cap cleans a slice, and the hook runs again.
+    try {
+      const entries = fs.opendirSync(dir);
       try {
-        const p = path.join(dir, f);
-        if (Date.now() - fs.statSync(p).mtimeMs > 3600_000) fs.unlinkSync(p);
-      } catch {}
-    }
+        for (let seen = 0; seen < MAX_SWEEP_ENTRIES; seen++) {
+          const entry = entries.readSync();
+          if (entry === null) break;
+          if (!entry.name.startsWith(".chirin-notify-tmp-")) continue;
+          try {
+            const p = path.join(dir, entry.name);
+            if (Date.now() - fs.statSync(p).mtimeMs > 3600_000) fs.unlinkSync(p);
+          } catch {}
+        }
+      } finally {
+        entries.closeSync();
+      }
+    } catch {}
 
     // The random suffix in ts must never be empty (Math.random()===0 would empty it and get it rejected)
     const suffix = Math.random().toString(36).slice(2) || "0";
