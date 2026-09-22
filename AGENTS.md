@@ -144,12 +144,14 @@ configuration lost, or an install broken on a supported VS Code.
     user-composed command or a copy at another path belongs to them. Changing the installed
     command means changing the migration handling that recognises the old one.
 
-13. **A limit the README documents but no test reaches.** The two that are left are not
-    exported, so `test/documentedLimits.test.ts` cannot name them: the 64KB json-state cap,
-    and the 256-character pattern length, which `test/config.test.ts` does pin against
-    widening by rejecting a 257-character pattern but not against shrinking. A change to
-    either is worth reading against what the README claims. Widening a module's surface for
-    a test is not the answer; asserting the behaviour is.
+13. **A limit the README documents that `test/documentedLimits.test.ts` does not list.**
+    That test names what it covers, and anything the README states outside its two tables is
+    covered by nothing: a change to such a limit is worth reading against what the README
+    claims. Do not read this as a short list. It was written as one twice, naming the limits
+    believed to be left over, and review found a further one both times -- an exported
+    pattern, then three documented lower bounds whose edges no test touched. Rejecting a
+    value far outside a range does not pin the range. Where a limit is not exported, assert
+    the behaviour at the documented edge rather than widening a module's surface for a test.
 
 ## What not to report
 
