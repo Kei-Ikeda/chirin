@@ -6,6 +6,9 @@ dist/test/**
 .github/**
 .devcontainer/**
 .claude/**
+# Agent instructions. Codex reads AGENTS.md from the repository root, so unlike
+# SECURITY.md it cannot be tucked into .github/; it has to be excluded by name.
+AGENTS.md
 # Scan artifacts. Gitignored, but vsce packages untracked files too, so they need excluding here.
 CLAUDE-SECURITY-*/**
 **/.claude-security-run/**
