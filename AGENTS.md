@@ -43,6 +43,8 @@ build rather than a review finding:
 | the `.vsix` carries only the distribution | the allowlist step in `ci.yml` |
 | a dependency with a known high advisory | `npm audit --audit-level=high` in `ci.yml` |
 | a VS Code API newer than `engines.vscode` | the pinned `@types/vscode`, as a type error |
+| an **exported** limit drifting from the README | `npm test`, in `test/documentedLimits.test.ts` |
+| the two nls bundles and the walkthrough pairing | `npm test`, in `test/localization.test.ts` |
 
 Neither of the first two is a compiler error, which is why they are tests: under a CommonJS
 NodeNext emit an extensionless relative import compiles, and a type-only `vscode` import is
@@ -133,18 +135,12 @@ configuration lost, or an install broken on a supported VS Code.
     user-composed command or a copy at another path belongs to them. Changing the installed
     command means changing the migration handling that recognises the old one.
 
-13. **A constant the README states.** The convention is that a documented constant is one a
-    test pins, and it is not upheld everywhere: `test/leader.test.ts`, for instance, builds
-    its fixtures from `MAX_LOCK_BYTES` rather than asserting it is still the 4KB the README
-    describes, so widening it leaves the build green and the README wrong. Until each
-    documented value is asserted against its literal, a change to one is worth reading
-    against what the README claims.
-
-14. **Localization keys.** Adding or removing a user-facing string means both
-    `package.nls.json` and `package.nls.ja.json`, and a walkthrough panel means both language
-    directories. Nothing checks this, so it is worth checking by eye. A test that pins the
-    two bundles to the same key set would retire this rule, as one asserting the documented
-    constants would retire the rule above it.
+13. **A limit the README documents but no test reaches.** The two that are left are not
+    exported, so `test/documentedLimits.test.ts` cannot name them: the 64KB json-state cap,
+    and the 256-character pattern length, which `test/config.test.ts` does pin against
+    widening by rejecting a 257-character pattern but not against shrinking. A change to
+    either is worth reading against what the README claims. Widening a module's surface for
+    a test is not the answer; asserting the behaviour is.
 
 ## What not to report
 
