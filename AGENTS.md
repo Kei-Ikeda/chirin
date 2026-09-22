@@ -66,6 +66,15 @@ Report concrete regressions. Rank a finding by what it costs: host-side code exe
 files exposed, a blocked extension host, a notification missed or duplicated, a user's hook
 configuration lost, or an install broken on a supported VS Code.
 
+Review the change, not the file it lands in. A finding has to name something the diff
+introduces, or existing code the diff makes wrong. A gap that was already there and that the
+change neither creates nor widens is a separate pull request, and saying so once is the whole
+of it -- repeating it on the next revision asks the author to finish an unrelated backlog
+before this change can merge. The distinction matters most for a test that pins documented
+behaviour, because "one more case is still uncovered" is true of every such test at every
+moment: closing three of those gaps is an improvement, and treating the fourth as a condition
+of merging means no revision can ever be the last one.
+
 1. **Watched content becoming a command.** Anything that builds a shell command, AppleScript,
    JavaScript or any other executable program out of watched or container-controlled input, or
    that adds a configurable "run this on a match" feature. This is a permanent non-goal, and a

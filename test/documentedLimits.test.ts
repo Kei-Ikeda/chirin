@@ -309,11 +309,12 @@ test("a json-state file at the documented 64KB is read, and one byte past it is 
 });
 
 /**
- * The documented values the table above cannot carry, because they are not exported. Both are
+ * The documented values the table above cannot carry, because they are not exported. Each is
  * pinned by behaviour at the value the README states -- watcher.test.ts writes seven states
- * and asserts five notifications, so a cap of four or six fails there, and config.test.ts
- * reads 5000 back off a rule that omits throttleMs. Being fixed at the value is exactly what
- * leaves the prose free to name a different one.
+ * and asserts five notifications, so a cap of four or six fails there; config.test.ts reads
+ * 5000 back off a rule that omits throttleMs; the pattern edge test above accepts 256
+ * characters and refuses 257. Being fixed at the value is exactly what leaves the prose free
+ * to name a different one.
  */
 const proseOnly = [
   {
@@ -325,6 +326,13 @@ const proseOnly = [
     name: "defaults.throttleMs (threat model)",
     anchor: "| Notification flooding |",
     spelling: "default 5000ms",
+  },
+  {
+    // The same README line the MAX_MATCH_TARGET_LEN row anchors, which reads only its half of
+    // the sentence: the 200 is checked there, the 256 here.
+    name: "match.pattern length (threat model)",
+    anchor: "Malicious input to a user-defined regex",
+    spelling: "the pattern length at 256",
   },
   {
     name: "defaults.throttleMs (grouping note)",
