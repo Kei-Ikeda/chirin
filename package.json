@@ -1,6 +1,6 @@
 {
   "name": "chirin",
-  "displayName": "Chirin Notifier",
+  "displayName": "%extension.displayName%",
   "publisher": "kei-ikeda",
   "version": "1.2.2",
   "description": "%extension.description%",

@@ -77,6 +77,7 @@ interface Contributed {
  */
 function contributed(): Contributed[] {
   const manifestJson = JSON.parse(manifest) as {
+    displayName?: string;
     description?: string;
     capabilities?: { untrustedWorkspaces?: { description?: string } };
     contributes?: {
@@ -100,6 +101,7 @@ function contributed(): Contributed[] {
     if (typeof value === "string") found.push({ where, value });
   };
 
+  add("displayName", manifestJson.displayName);
   add("description", manifestJson.description);
   add("capabilities.untrustedWorkspaces.description", manifestJson.capabilities?.untrustedWorkspaces?.description);
   for (const [name, property] of Object.entries(manifestJson.contributes?.configuration?.properties ?? {})) {
