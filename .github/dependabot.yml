@@ -10,6 +10,11 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # A release is only offered once it is 7 days old (Dependabot's own default is 3). A
+    # hijacked publish is usually caught and pulled within days, and this waits that out.
+    # Security updates are not subject to cooldown, so an advisory fix still arrives at once.
+    cooldown:
+      default-days: 7
     ignore:
       # These two are pinned on purpose, not left behind, and the first Dependabot run
       # offered to raise both. @types/vscode has to equal the lower bound of
@@ -28,3 +33,6 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Same 7 days as npm: a new action release runs in CI with this repository's token
+    cooldown:
+      default-days: 7
